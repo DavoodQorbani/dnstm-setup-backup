@@ -212,6 +212,7 @@ help_topic_domain() {
     echo "    t2.example.com  ->  Slipstream + SOCKS tunnel"
     echo "    d2.example.com  ->  DNSTT + SOCKS tunnel"
     echo "    s2.example.com  ->  Slipstream + SSH tunnel"
+    echo "    ds2.example.com ->  DNSTT + SSH tunnel"
     help_press_enter
 }
 
@@ -238,12 +239,13 @@ help_topic_dns_records() {
     echo "  directly. If the proxy is ON, queries go to Cloudflare"
     echo "  instead and tunneling breaks completely."
     echo ""
-    echo -e "  ${BOLD}Why 3 subdomains?${NC}"
+    echo -e "  ${BOLD}Why 4 subdomains?${NC}"
     echo "  Each tunnel type needs its own subdomain so the DNS"
     echo "  Router can route them to the right tunnel:"
-    echo "    t2 -> Slipstream + SOCKS  (fastest, QUIC-based)"
-    echo "    d2 -> DNSTT + SOCKS       (classic, Noise protocol)"
-    echo "    s2 -> Slipstream + SSH    (SSH over DNS)"
+    echo "    t2  -> Slipstream + SOCKS  (fastest, QUIC-based)"
+    echo "    d2  -> DNSTT + SOCKS       (classic, Noise protocol)"
+    echo "    s2  -> Slipstream + SSH    (SSH over DNS)"
+    echo "    ds2 -> DNSTT + SSH         (SSH over DNSTT)"
     echo ""
     echo -e "  ${BOLD}Common mistakes${NC}"
     echo "  - Using 'tns' instead of 'ns' for the A record name"
@@ -330,7 +332,7 @@ help_topic_ssh() {
     echo "  SOCKS (t2/d2 tunnels):"
     echo "    - Faster, no authentication needed"
     echo "    - Anyone who knows the domain can connect"
-    echo "  SSH (s2 tunnel):"
+    echo "  SSH (s2/ds2 tunnels):"
     echo "    - Requires username + password to connect"
     echo "    - Only authorized users can use it"
     echo "    - Slightly slower (SSH encryption overhead)"
@@ -364,10 +366,10 @@ help_topic_architecture() {
     echo "    Your Server, Port 53"
     echo "      |"
     echo "      v"
-    echo "    DNS Router --+--> t2 --> Slipstream --+--> microsocks"
-    echo "                 +--> d2 --> DNSTT -------+    (SOCKS5)"
-    echo "                 +--> s2 --> Slip+SSH ----+       |"
-    echo "                                                  v"
+    echo "    DNS Router --+--> t2  --> Slipstream --+--> microsocks"
+    echo "                 +--> d2  --> DNSTT -------+    (SOCKS5)"
+    echo "                 +--> s2  --> Slip+SSH ----+       |"
+    echo "                 +--> ds2 --> DNSTT+SSH ---+       v"
     echo "                                              Internet"
     echo ""
     echo -e "  ${BOLD}Protocols${NC}"
@@ -454,22 +456,25 @@ show_help() {
     echo "  - curl installed on the server"
     echo ""
     echo -e "${BOLD}USAGE${NC}"
-    echo "  sudo bash dnstm-setup.sh            Run interactive setup"
-    echo "  sudo bash dnstm-setup.sh --uninstall Remove everything"
-    echo "  bash dnstm-setup.sh --help           Show this help"
-    echo "  bash dnstm-setup.sh --about          Show project info"
+    echo "  sudo bash dnstm-setup.sh              Run interactive setup"
+    echo "  sudo bash dnstm-setup.sh --add-domain  Add a backup domain to existing setup"
+    echo "  sudo bash dnstm-setup.sh --uninstall   Remove everything"
+    echo "  bash dnstm-setup.sh --help             Show this help"
+    echo "  bash dnstm-setup.sh --about            Show project info"
     echo ""
     echo -e "${BOLD}FLAGS${NC}"
-    echo "  --help        Show this help message"
-    echo "  --about       Show project information and credits"
-    echo "  --uninstall   Remove all installed components"
+    echo "  --help         Show this help message"
+    echo "  --about        Show project information and credits"
+    echo "  --add-domain   Add another domain to an existing server (backup/fallback)"
+    echo "  --uninstall    Remove all installed components"
     echo ""
     echo -e "${BOLD}WHAT THIS SCRIPT SETS UP${NC}"
     echo "  1. Slipstream + SOCKS tunnel  (fastest, ~63 KB/s)"
     echo "  2. DNSTT + SOCKS tunnel       (classic, ~42 KB/s)"
     echo "  3. Slipstream + SSH tunnel    (SSH over DNS)"
-    echo "  4. microsocks SOCKS5 proxy    (auto-installed by dnstm)"
-    echo "  5. SSH tunnel user (optional)"
+    echo "  4. DNSTT + SSH tunnel         (SSH over DNSTT)"
+    echo "  5. microsocks SOCKS5 proxy    (auto-installed by dnstm)"
+    echo "  6. SSH tunnel user (optional)"
     echo ""
     echo -e "${BOLD}CLIENT APP${NC}"
     echo "  SlipNet (Android): https://github.com/anonvector/SlipNet/releases"
@@ -606,12 +611,15 @@ do_uninstall() {
         print_ok "Removed /etc/dnstm"
     fi
 
+    # Unlock resolv.conf so the system can manage DNS again
+    chattr -i /etc/resolv.conf 2>/dev/null || true
+    print_ok "Removed immutable flag from /etc/resolv.conf"
+
     echo ""
     print_ok "${GREEN}Uninstall complete.${NC}"
     echo ""
     print_warn "Note: DNS records in Cloudflare were NOT removed. Remove them manually if needed."
     print_warn "Note: systemd-resolved was NOT re-enabled. Enable manually if needed:"
-    echo "         chattr -i /etc/resolv.conf 2>/dev/null"
     echo "         rm /etc/resolv.conf && ln -s ../run/systemd/resolve/stub-resolv.conf /etc/resolv.conf"
     echo "         systemctl unmask systemd-resolved.socket systemd-resolved.service"
     echo "         systemctl enable systemd-resolved && systemctl start systemd-resolved"
@@ -633,8 +641,12 @@ case "${1:-}" in
         do_uninstall
         exit 0
         ;;
+    --add-domain)
+        ADD_DOMAIN_MODE=true
+        ;;
     "")
         # No args, continue with setup
+        ADD_DOMAIN_MODE=false
         ;;
     *)
         echo "Unknown option: $1"
@@ -650,6 +662,7 @@ SERVER_IP=""
 DNSTT_PUBKEY=""
 SSH_USER=""
 SSH_PASS=""
+TUNNELS_CHANGED=false
 SSH_SETUP_DONE=false
 
 # ─── STEP 1: Pre-flight Checks ─────────────────────────────────────────────────
@@ -665,13 +678,15 @@ step_preflight() {
         exit 1
     fi
 
-    # Check OS
+    # Check OS (read in subshell to avoid overwriting script's VERSION variable)
     if [[ -f /etc/os-release ]]; then
-        . /etc/os-release
-        if [[ "$ID" == "ubuntu" || "$ID" == "debian" ]]; then
-            print_ok "OS: ${PRETTY_NAME:-$ID}"
+        local os_id os_name
+        os_id=$(. /etc/os-release && echo "${ID:-}")
+        os_name=$(. /etc/os-release && echo "${PRETTY_NAME:-$os_id}")
+        if [[ "$os_id" == "ubuntu" || "$os_id" == "debian" ]]; then
+            print_ok "OS: ${os_name}"
         else
-            print_warn "OS: ${PRETTY_NAME:-$ID} (not Ubuntu/Debian - may work but untested)"
+            print_warn "OS: ${os_name} (not Ubuntu/Debian - may work but untested)"
         fi
     else
         print_warn "Cannot detect OS (missing /etc/os-release)"
@@ -747,18 +762,20 @@ step_dns_records() {
         "Record 1:  Type: A   | Name: ns | Value: ${SERVER_IP}" \
         "           Proxy: OFF (DNS Only - grey cloud)" \
         "" \
-        "Record 2:  Type: NS  | Name: t2 | Value: ns.${DOMAIN}" \
-        "Record 3:  Type: NS  | Name: d2 | Value: ns.${DOMAIN}" \
-        "Record 4:  Type: NS  | Name: s2 | Value: ns.${DOMAIN}"
+        "Record 2:  Type: NS  | Name: t2  | Value: ns.${DOMAIN}" \
+        "Record 3:  Type: NS  | Name: d2  | Value: ns.${DOMAIN}" \
+        "Record 4:  Type: NS  | Name: s2  | Value: ns.${DOMAIN}" \
+        "Record 5:  Type: NS  | Name: ds2 | Value: ns.${DOMAIN}"
 
     echo ""
     print_warn "IMPORTANT: The A record MUST be DNS Only (grey cloud, NOT orange)"
     print_warn "IMPORTANT: The A record name must be \"ns\" (not \"tns\")"
     echo ""
     echo "  Subdomain purposes:"
-    echo "    t2 = Slipstream + SOCKS tunnel"
-    echo "    d2 = DNSTT + SOCKS tunnel"
-    echo "    s2 = Slipstream + SSH tunnel"
+    echo "    t2  = Slipstream + SOCKS tunnel"
+    echo "    d2  = DNSTT + SOCKS tunnel"
+    echo "    s2  = Slipstream + SSH tunnel"
+    echo "    ds2 = DNSTT + SSH tunnel"
     echo ""
 
     if ! prompt_yn "Have you created these DNS records in Cloudflare?" "n"; then
@@ -855,17 +872,35 @@ step_install_dnstm() {
         print_info "dnstm is already installed (${ver})"
         echo ""
         if ! prompt_yn "Re-install / update dnstm?" "n"; then
+            # Ensure router is in multi mode even if we skip install
+            local current_mode
+            current_mode=$(dnstm router mode 2>/dev/null | awk '/[Mm]ode/{for(i=1;i<=NF;i++) if($i=="multi"||$i=="single") print $i}' | head -1 || true)
+            if [[ "$current_mode" != "multi" ]]; then
+                print_warn "Router mode is '${current_mode:-unknown}', switching to multi..."
+                if dnstm router mode multi 2>/dev/null; then
+                    print_ok "Router mode switched to multi"
+                else
+                    print_fail "Failed to switch router mode to multi"
+                    exit 1
+                fi
+            else
+                print_ok "Router mode: multi"
+            fi
             print_ok "Skipping dnstm installation"
             return
         fi
     fi
 
-    # Stop ALL dnstm-related services before overwriting the binary
+    # Stop and remove ALL tunnels so they get fresh configs after re-install
     print_info "Stopping dnstm services..."
     dnstm router stop 2>/dev/null || true
-    dnstm tunnel stop --tag slip1 2>/dev/null || true
-    dnstm tunnel stop --tag dnstt1 2>/dev/null || true
-    dnstm tunnel stop --tag slip-ssh 2>/dev/null || true
+    # Remove all existing tunnels (they'll be recreated in Step 7 with correct ports)
+    local old_tags
+    old_tags=$(dnstm tunnel list 2>/dev/null | grep -o 'tag=[^ ]*' | sed 's/tag=//' || true)
+    for tag in $old_tags; do
+        dnstm tunnel stop --tag "$tag" 2>/dev/null || true
+        dnstm tunnel remove --tag "$tag" 2>/dev/null || true
+    done
     # Stop all dnstm systemd units
     local unit
     for unit in $(systemctl list-units --type=service --no-legend 'dnstm-*' 2>/dev/null | awk '{print $1}' || true); do
@@ -895,15 +930,36 @@ step_install_dnstm() {
         exit 1
     fi
 
-    # Install in multi mode
+    # Save iptables state before dnstm install (it may reset firewall rules)
+    local iptables_backup="/tmp/iptables-backup-$$"
+    iptables-save > "$iptables_backup" 2>/dev/null || true
+
+    # Install in multi mode (use --force on re-install)
     print_info "Running dnstm install --mode multi ..."
     echo ""
-    if dnstm install --mode multi; then
+    local install_ok=false
+    if dnstm install --mode multi --force; then
         echo ""
+        install_ok=true
         print_ok "dnstm installed successfully"
+        TUNNELS_CHANGED=true
     else
         echo ""
         print_fail "dnstm install failed"
+    fi
+
+    # Restore original firewall rules (dnstm install may have reset them)
+    if [[ -s "$iptables_backup" ]]; then
+        iptables-restore < "$iptables_backup" 2>/dev/null || true
+    else
+        # No prior rules — ensure default policy is ACCEPT (not DROP)
+        iptables -P INPUT ACCEPT 2>/dev/null || true
+        iptables -P FORWARD ACCEPT 2>/dev/null || true
+        iptables -P OUTPUT ACCEPT 2>/dev/null || true
+    fi
+    rm -f "$iptables_backup"
+
+    if [[ "$install_ok" != "true" ]]; then
         exit 1
     fi
 
@@ -942,34 +998,15 @@ step_verify_port53() {
     fi
 
     if echo "$port53_output" | grep -q "dnstm"; then
-        print_ok "dnstm DNS Router is listening on port 53"
+        print_ok "dnstm DNS Router is already on port 53"
+        print_info "Router will be restarted after tunnel creation to pick up any changes"
+    elif [[ -z "$port53_output" ]]; then
+        print_ok "Port 53 is free — ready for DNS Router"
     else
-        print_warn "DNS Router is not listening on port 53"
-        print_info "Starting DNS Router..."
-        if dnstm router start 2>/dev/null; then
-            print_ok "DNS Router started"
-        else
-            print_fail "Failed to start DNS Router"
-            exit 1
-        fi
-
-        # Wait for router to bind to port 53
-        local attempts=0
-        local max_attempts=5
-        while [[ $attempts -lt $max_attempts ]]; do
-            sleep 1
-            port53_output=$(ss -ulnp 2>/dev/null | grep ':53 ' || true)
-            if echo "$port53_output" | grep -q "dnstm"; then
-                print_ok "DNS Router confirmed on port 53"
-                break
-            fi
-            attempts=$((attempts + 1))
-        done
-
-        if [[ $attempts -ge $max_attempts ]]; then
-            print_fail "DNS Router still not on port 53 after ${max_attempts}s. Check logs: dnstm router logs"
-            exit 1
-        fi
+        print_warn "Port 53 is in use by an unknown process:"
+        echo "$port53_output"
+        print_fail "Cannot proceed — port 53 must be free for the DNS Router"
+        exit 1
     fi
 
     # Firewall
@@ -1002,7 +1039,8 @@ step_verify_port53() {
 step_create_tunnels() {
     print_step 7 "Create Tunnels"
 
-    print_info "Creating 3 tunnels for domain: ${BOLD}${DOMAIN}${NC}"
+    local any_created=false
+    print_info "Creating 4 tunnels for domain: ${BOLD}${DOMAIN}${NC}"
     echo ""
 
     # Tunnel 1: Slipstream + SOCKS
@@ -1011,6 +1049,7 @@ step_create_tunnels() {
     echo ""
     if dnstm tunnel add --transport slipstream --backend socks --domain "t2.${DOMAIN}" --tag slip1 2>&1; then
         print_ok "Created: slip1 (Slipstream + SOCKS) on t2.${DOMAIN}"
+        any_created=true
     else
         print_warn "Tunnel slip1 may already exist or creation failed"
         print_info "If it already exists, this is OK"
@@ -1033,6 +1072,7 @@ step_create_tunnels() {
 
     if [[ -n "$DNSTT_PUBKEY" ]]; then
         print_ok "Created: dnstt1 (DNSTT + SOCKS) on d2.${DOMAIN}"
+        any_created=true
         echo ""
         echo -e "  ${BOLD}${YELLOW}DNSTT Public Key (save this!):${NC}"
         echo -e "  ${GREEN}${DNSTT_PUBKEY}${NC}"
@@ -1048,8 +1088,22 @@ step_create_tunnels() {
     echo ""
     if dnstm tunnel add --transport slipstream --backend ssh --domain "s2.${DOMAIN}" --tag slip-ssh 2>&1; then
         print_ok "Created: slip-ssh (Slipstream + SSH) on s2.${DOMAIN}"
+        any_created=true
     else
         print_warn "Tunnel slip-ssh may already exist or creation failed"
+        print_info "If it already exists, this is OK"
+    fi
+    echo ""
+
+    # Tunnel 4: DNSTT + SSH
+    echo -e "  ${DIM}───────────────────────────────────────────────${NC}"
+    echo -e "  ${BOLD}Tunnel 4: DNSTT + SSH${NC}"
+    echo ""
+    if dnstm tunnel add --transport dnstt --backend ssh --domain "ds2.${DOMAIN}" --tag dnstt-ssh 2>&1; then
+        print_ok "Created: dnstt-ssh (DNSTT + SSH) on ds2.${DOMAIN}"
+        any_created=true
+    else
+        print_warn "Tunnel dnstt-ssh may already exist or creation failed"
         print_info "If it already exists, this is OK"
     fi
     echo ""
@@ -1063,6 +1117,9 @@ step_create_tunnels() {
         fi
     fi
 
+    if [[ "$any_created" == true ]]; then
+        TUNNELS_CHANGED=true
+    fi
     print_ok "All tunnels created"
 }
 
@@ -1071,24 +1128,69 @@ step_create_tunnels() {
 step_start_services() {
     print_step 8 "Start Services"
 
-    # Start router
-    print_info "Starting DNS Router..."
-    if dnstm router start 2>/dev/null; then
-        print_ok "DNS Router started"
-    else
-        # May already be running
-        if dnstm router status 2>/dev/null | grep -qi "running"; then
-            print_ok "DNS Router already running"
+    # Only restart router if tunnels/install changed (avoid downtime on re-runs)
+    if [[ "$TUNNELS_CHANGED" == "true" ]]; then
+        # Stop router first to ensure it picks up the new tunnel config
+        # (install may have started it before tunnels were created)
+        print_info "Stopping DNS Router (to reload tunnel config)..."
+        dnstm router stop 2>/dev/null || true
+        sleep 1
+
+        # Start router — this reads config.json which now has all tunnels
+        print_info "Starting DNS Router..."
+        if dnstm router start 2>/dev/null; then
+            print_ok "DNS Router started"
         else
-            print_warn "DNS Router may have issues. Check: dnstm router logs"
+            print_warn "DNS Router start returned an error. Checking status..."
+            if dnstm router status 2>/dev/null | grep -qi "running"; then
+                print_ok "DNS Router is running"
+            else
+                print_fail "DNS Router failed to start. Check: dnstm router logs"
+                exit 1
+            fi
+        fi
+
+        # Wait for router to bind to port 53
+        local attempts=0
+        local max_attempts=10
+        while [[ $attempts -lt $max_attempts ]]; do
+            sleep 1
+            if ss -ulnp 2>/dev/null | grep ':53 ' | grep -q "dnstm"; then
+                print_ok "DNS Router confirmed on port 53"
+                break
+            fi
+            attempts=$((attempts + 1))
+        done
+
+        if [[ $attempts -ge $max_attempts ]]; then
+            print_warn "DNS Router may not be on port 53 yet. Check: dnstm router logs"
+        fi
+    else
+        # No changes — just verify router is running
+        if ss -ulnp 2>/dev/null | grep ':53 ' | grep -q "dnstm"; then
+            print_ok "DNS Router already running on port 53 (no restart needed)"
+        else
+            print_warn "DNS Router not detected on port 53. Attempting start..."
+            dnstm router start 2>/dev/null || true
+            sleep 2
+            if ss -ulnp 2>/dev/null | grep ':53 ' | grep -q "dnstm"; then
+                print_ok "DNS Router started on port 53"
+            else
+                print_fail "DNS Router failed to start. Check: dnstm router logs"
+                exit 1
+            fi
         fi
     fi
 
     echo ""
 
-    # Start tunnels
-    local tunnels=("slip1" "dnstt1" "slip-ssh")
-    for tag in "${tunnels[@]}"; do
+    # Start tunnels (discover all tags dynamically to support --add-domain tunnels)
+    local all_tags
+    all_tags=$(dnstm tunnel list 2>/dev/null | grep -o 'tag=[^ ]*' | sed 's/tag=//' || true)
+    if [[ -z "$all_tags" ]]; then
+        all_tags="slip1 dnstt1 slip-ssh dnstt-ssh"
+    fi
+    for tag in $all_tags; do
         print_info "Starting tunnel: ${tag}..."
         if dnstm tunnel start --tag "$tag" 2>/dev/null; then
             print_ok "Started: ${tag}"
@@ -1112,6 +1214,40 @@ step_start_services() {
 
 step_verify_microsocks() {
     print_step 9 "Verify SOCKS Proxy (microsocks)"
+
+    # Check if microsocks binary has GLIBC compatibility issues
+    local microsocks_bin
+    microsocks_bin=$(command -v microsocks 2>/dev/null || echo "/usr/local/bin/microsocks")
+    if [[ -x "$microsocks_bin" ]]; then
+        local glibc_err
+        glibc_err=$("$microsocks_bin" --help 2>&1 || true)
+        if echo "$glibc_err" | grep -q "GLIBC.*not found"; then
+            print_warn "microsocks binary is incompatible with this OS (GLIBC version mismatch)"
+            print_info "Building microsocks from source..."
+
+            # Install build tools
+            apt-get install -y -qq gcc make git >/dev/null 2>&1 || true
+
+            # Build from source
+            local build_dir="/tmp/microsocks-build"
+            rm -rf "$build_dir"
+            if git clone --quiet https://github.com/rofl0r/microsocks.git "$build_dir" 2>/dev/null; then
+                if make -C "$build_dir" -j"$(nproc)" >/dev/null 2>&1; then
+                    cp "$build_dir/microsocks" "$microsocks_bin"
+                    chmod +x "$microsocks_bin"
+                    print_ok "Built microsocks from source"
+                    # Restart the service with the new binary
+                    systemctl restart microsocks 2>/dev/null || true
+                    sleep 1
+                else
+                    print_fail "Failed to build microsocks from source"
+                fi
+            else
+                print_fail "Failed to clone microsocks repo"
+            fi
+            rm -rf "$build_dir"
+        fi
+    fi
 
     # Check if microsocks is running
     if pgrep -x microsocks &>/dev/null || systemctl is-active --quiet microsocks 2>/dev/null; then
@@ -1161,7 +1297,7 @@ step_verify_microsocks() {
 step_ssh_user() {
     print_step 10 "SSH Tunnel User (Optional)"
 
-    print_info "An SSH tunnel user allows clients to connect via Slipstream + SSH."
+    print_info "An SSH tunnel user allows clients to connect via Slipstream + SSH or DNSTT + SSH."
     print_info "This user can only create tunnels and has no shell access."
     echo ""
 
@@ -1268,12 +1404,12 @@ step_tests() {
     tunnel_output=$(dnstm tunnel list 2>/dev/null || true)
     if [[ -n "$tunnel_output" ]]; then
         local running_count
-        running_count=$(echo "$tunnel_output" | grep -ci "running" || true)
-        if [[ "$running_count" -ge 3 ]]; then
+        running_count=$(echo "$tunnel_output" | grep -ci "running" || echo "0")
+        if [[ "$running_count" -ge 4 ]]; then
             print_ok "All tunnels running: PASS (${running_count} running)"
             pass=$((pass + 1))
         elif [[ "$running_count" -ge 1 ]]; then
-            print_warn "Some tunnels running: ${running_count}/3"
+            print_warn "Some tunnels running: ${running_count}/4"
             pass=$((pass + 1))
         else
             print_fail "No tunnels running: FAIL"
@@ -1304,6 +1440,35 @@ step_tests() {
     else
         print_fail "Port 53: FAIL (dnstm not listening)"
         fail=$((fail + 1))
+    fi
+    echo ""
+
+    # Test 5: DNS delegation (end-to-end reachability)
+    echo -e "  ${BOLD}Test 5: DNS Delegation${NC}"
+    if command -v dig &>/dev/null; then
+        local dig_result
+        dig_result=$(dig +short +timeout=5 +tries=1 "dnstm-test.t2.${DOMAIN}" @8.8.8.8 2>/dev/null || true)
+        if [[ -n "$dig_result" ]]; then
+            print_ok "DNS delegation: PASS (query reached server via 8.8.8.8)"
+            pass=$((pass + 1))
+        else
+            # Try Cloudflare resolver as fallback
+            dig_result=$(dig +short +timeout=5 +tries=1 "dnstm-test.t2.${DOMAIN}" @1.1.1.1 2>/dev/null || true)
+            if [[ -n "$dig_result" ]]; then
+                print_ok "DNS delegation: PASS (query reached server via 1.1.1.1)"
+                pass=$((pass + 1))
+            else
+                print_warn "DNS delegation: No response from public resolvers"
+                print_info "This may mean DNS records are not set up correctly in Cloudflare,"
+                print_info "or it may take a few minutes for DNS to propagate."
+                print_info "Test manually: dig t2.${DOMAIN} @8.8.8.8"
+                fail=$((fail + 1))
+            fi
+        fi
+    else
+        print_info "DNS delegation: SKIPPED (dig not installed — install with: apt install dnsutils)"
+        print_info "Test manually: nslookup t2.${DOMAIN} 8.8.8.8"
+        pass=$((pass + 1))
     fi
     echo ""
 
@@ -1349,6 +1514,7 @@ step_summary() {
     echo -e "  Slipstream + SOCKS:  ${GREEN}t2.${DOMAIN}${NC}"
     echo -e "  DNSTT + SOCKS:       ${GREEN}d2.${DOMAIN}${NC}"
     echo -e "  Slipstream + SSH:    ${GREEN}s2.${DOMAIN}${NC}"
+    echo -e "  DNSTT + SSH:         ${GREEN}ds2.${DOMAIN}${NC}"
     echo ""
 
     if [[ -n "$DNSTT_PUBKEY" ]]; then
@@ -1395,6 +1561,266 @@ step_summary() {
     echo ""
 }
 
+# ─── Add Domain ──────────────────────────────────────────────────────────────────
+
+# Detect next available tunnel number by scanning existing tags
+detect_next_tunnel_num() {
+    local max=1
+    local tags
+    tags=$(dnstm tunnel list 2>/dev/null | grep -o 'tag=[^ ]*' | sed 's/tag=//' || true)
+    for tag in $tags; do
+        local num
+        num=$(echo "$tag" | grep -oE '[0-9]+$' || true)
+        if [[ -n "$num" && "$num" -ge "$max" ]]; then
+            max=$((num + 1))
+        fi
+    done
+    echo "$max"
+}
+
+do_add_domain() {
+    banner
+    print_header "Add Backup Domain"
+
+    # Check root
+    if [[ $EUID -ne 0 ]]; then
+        print_fail "Not running as root. Please run with: sudo bash $0 --add-domain"
+        exit 1
+    fi
+
+    # Check dnstm is installed
+    if ! command -v dnstm &>/dev/null; then
+        print_fail "dnstm is not installed. Run the full setup first: sudo bash $0"
+        exit 1
+    fi
+
+    # Check router is running
+    if ! dnstm router status 2>/dev/null | grep -qi "running"; then
+        print_warn "DNS Router is not running. Starting it..."
+        dnstm router start 2>/dev/null || true
+    fi
+
+    # Detect server IP
+    SERVER_IP=$(curl -4 -s --max-time 10 https://api.ipify.org 2>/dev/null || true)
+    if [[ -z "$SERVER_IP" ]]; then
+        SERVER_IP=$(prompt_input "Enter your server's public IP")
+        if [[ -z "$SERVER_IP" ]]; then
+            print_fail "Server IP is required."
+            exit 1
+        fi
+    fi
+    print_ok "Server IP: ${SERVER_IP}"
+
+    # Show existing tunnels
+    echo ""
+    print_info "Current tunnels:"
+    echo ""
+    dnstm tunnel list 2>/dev/null || true
+    echo ""
+
+    # Detect next tunnel number
+    local num
+    num=$(detect_next_tunnel_num)
+    print_info "Next tunnel set number: ${num}"
+    echo ""
+
+    # Get existing tunnel domains for duplicate check
+    local existing_domains
+    existing_domains=$(dnstm tunnel list 2>/dev/null | grep -o 'domain=[^ ]*' | sed 's/domain=//;s/^[a-z0-9]*\.//' | sort -u || true)
+
+    # Ask for new domain
+    while true; do
+        DOMAIN=$(prompt_input "Enter the new backup domain (e.g. backup.com)")
+        DOMAIN=$(echo "$DOMAIN" | sed 's|^[[:space:]]*||;s|[[:space:]]*$||;s|^https\?://||;s|/.*$||')
+        if [[ -z "$DOMAIN" ]]; then
+            print_fail "Domain cannot be empty. Please try again."
+        elif [[ ! "$DOMAIN" =~ \. ]]; then
+            print_fail "Invalid domain (must contain a dot). Please try again."
+        elif echo "$existing_domains" | grep -qx "$DOMAIN"; then
+            print_fail "Domain '${DOMAIN}' is already in use by an existing tunnel. Please enter a different domain."
+        else
+            break
+        fi
+    done
+
+    echo ""
+    print_ok "Domain: ${DOMAIN}"
+    echo ""
+
+    # DNS record instructions
+    print_header "DNS Records for ${DOMAIN}"
+
+    print_info "Create these records in Cloudflare for ${BOLD}${DOMAIN}${NC}:"
+    echo ""
+    print_box \
+        "Record 1:  Type: A   | Name: ns  | Value: ${SERVER_IP}" \
+        "           Proxy: OFF (DNS Only - grey cloud)" \
+        "" \
+        "Record 2:  Type: NS  | Name: t2  | Value: ns.${DOMAIN}" \
+        "Record 3:  Type: NS  | Name: d2  | Value: ns.${DOMAIN}" \
+        "Record 4:  Type: NS  | Name: s2  | Value: ns.${DOMAIN}" \
+        "Record 5:  Type: NS  | Name: ds2 | Value: ns.${DOMAIN}"
+
+    echo ""
+    print_warn "IMPORTANT: The A record MUST be DNS Only (grey cloud, NOT orange)"
+    echo ""
+
+    if ! prompt_yn "Have you created these DNS records in Cloudflare?" "n"; then
+        echo ""
+        print_info "Please create the DNS records and re-run: sudo bash $0 --add-domain"
+        exit 0
+    fi
+
+    echo ""
+
+    # Create tunnels with numbered tags
+    local slip_tag="slip${num}"
+    local dnstt_tag="dnstt${num}"
+    local slip_ssh_tag="slip-ssh${num}"
+    local dnstt_ssh_tag="dnstt-ssh${num}"
+
+    print_header "Creating Tunnels for ${DOMAIN}"
+
+    print_info "Creating 4 tunnels (set #${num}) for domain: ${BOLD}${DOMAIN}${NC}"
+    echo ""
+
+    # Tunnel 1: Slipstream + SOCKS
+    echo -e "  ${DIM}───────────────────────────────────────────────${NC}"
+    echo -e "  ${BOLD}Tunnel: Slipstream + SOCKS${NC}"
+    echo ""
+    if dnstm tunnel add --transport slipstream --backend socks --domain "t2.${DOMAIN}" --tag "$slip_tag" 2>&1; then
+        print_ok "Created: ${slip_tag} (Slipstream + SOCKS) on t2.${DOMAIN}"
+    else
+        print_warn "Tunnel ${slip_tag} may already exist or creation failed"
+    fi
+    echo ""
+
+    # Tunnel 2: DNSTT + SOCKS
+    echo -e "  ${DIM}───────────────────────────────────────────────${NC}"
+    echo -e "  ${BOLD}Tunnel: DNSTT + SOCKS${NC}"
+    echo ""
+    local dnstt_output
+    dnstt_output=$(dnstm tunnel add --transport dnstt --backend socks --domain "d2.${DOMAIN}" --tag "$dnstt_tag" 2>&1) || true
+    echo "$dnstt_output"
+
+    DNSTT_PUBKEY=""
+    if [[ -f "/etc/dnstm/tunnels/${dnstt_tag}/server.pub" ]]; then
+        DNSTT_PUBKEY=$(cat "/etc/dnstm/tunnels/${dnstt_tag}/server.pub" 2>/dev/null || true)
+    fi
+
+    if [[ -n "$DNSTT_PUBKEY" ]]; then
+        print_ok "Created: ${dnstt_tag} (DNSTT + SOCKS) on d2.${DOMAIN}"
+        echo ""
+        echo -e "  ${BOLD}${YELLOW}DNSTT Public Key (save this!):${NC}"
+        echo -e "  ${GREEN}${DNSTT_PUBKEY}${NC}"
+    else
+        print_warn "Tunnel ${dnstt_tag} may already exist or creation failed"
+    fi
+    echo ""
+
+    # Tunnel 3: Slipstream + SSH
+    echo -e "  ${DIM}───────────────────────────────────────────────${NC}"
+    echo -e "  ${BOLD}Tunnel: Slipstream + SSH${NC}"
+    echo ""
+    if dnstm tunnel add --transport slipstream --backend ssh --domain "s2.${DOMAIN}" --tag "$slip_ssh_tag" 2>&1; then
+        print_ok "Created: ${slip_ssh_tag} (Slipstream + SSH) on s2.${DOMAIN}"
+    else
+        print_warn "Tunnel ${slip_ssh_tag} may already exist or creation failed"
+    fi
+    echo ""
+
+    # Tunnel 4: DNSTT + SSH
+    echo -e "  ${DIM}───────────────────────────────────────────────${NC}"
+    echo -e "  ${BOLD}Tunnel: DNSTT + SSH${NC}"
+    echo ""
+    if dnstm tunnel add --transport dnstt --backend ssh --domain "ds2.${DOMAIN}" --tag "$dnstt_ssh_tag" 2>&1; then
+        print_ok "Created: ${dnstt_ssh_tag} (DNSTT + SSH) on ds2.${DOMAIN}"
+    else
+        print_warn "Tunnel ${dnstt_ssh_tag} may already exist or creation failed"
+    fi
+    echo ""
+
+    # Re-read DNSTT key if not captured
+    if [[ -z "$DNSTT_PUBKEY" && -f "/etc/dnstm/tunnels/${dnstt_tag}/server.pub" ]]; then
+        DNSTT_PUBKEY=$(cat "/etc/dnstm/tunnels/${dnstt_tag}/server.pub" 2>/dev/null || true)
+    fi
+
+    print_ok "All tunnels created"
+    echo ""
+
+    # Restart router to pick up new tunnel config
+    print_info "Restarting DNS Router to load new tunnels..."
+    dnstm router stop 2>/dev/null || true
+    sleep 1
+    if dnstm router start 2>/dev/null; then
+        print_ok "DNS Router restarted"
+    else
+        print_warn "DNS Router restart may have issues. Check: dnstm router logs"
+    fi
+    echo ""
+
+    # Start new tunnels
+    print_info "Starting new tunnels..."
+    for tag in "$slip_tag" "$dnstt_tag" "$slip_ssh_tag" "$dnstt_ssh_tag"; do
+        if dnstm tunnel start --tag "$tag" 2>/dev/null; then
+            print_ok "Started: ${tag}"
+        else
+            if dnstm tunnel list 2>/dev/null | grep "$tag" | grep -qi "running"; then
+                print_ok "Already running: ${tag}"
+            else
+                print_warn "Could not start: ${tag}. Check: dnstm tunnel logs --tag ${tag}"
+            fi
+        fi
+    done
+
+    echo ""
+    print_info "All tunnels:"
+    echo ""
+    dnstm tunnel list 2>/dev/null || true
+    echo ""
+
+    # Summary
+    local w=54
+    local border empty
+    border=$(printf '═%.0s' $(seq 1 $w))
+    empty=$(printf ' %.0s' $(seq 1 $w))
+    local msg="DOMAIN ADDED!"
+    local ml=$(( (w - ${#msg}) / 2 ))
+    local mr=$(( w - ${#msg} - ml ))
+
+    echo -e "${BOLD}${GREEN}"
+    printf "  ╔%s╗\n" "$border"
+    printf "  ║%s║\n" "$empty"
+    printf "  ║%${ml}s%s%${mr}s║\n" "" "$msg" ""
+    printf "  ║%s║\n" "$empty"
+    printf "  ╚%s╝\n" "$border"
+    echo -e "${NC}"
+
+    echo -e "  ${BOLD}Server Information${NC}"
+    echo -e "  ${DIM}────────────────────────────────────────${NC}"
+    echo -e "  Server IP:     ${GREEN}${SERVER_IP}${NC}"
+    echo -e "  Domain:        ${GREEN}${DOMAIN}${NC}"
+    echo ""
+
+    echo -e "  ${BOLD}Tunnel Endpoints${NC}"
+    echo -e "  ${DIM}────────────────────────────────────────${NC}"
+    echo -e "  Slipstream + SOCKS:  ${GREEN}t2.${DOMAIN}${NC}  (${slip_tag})"
+    echo -e "  DNSTT + SOCKS:       ${GREEN}d2.${DOMAIN}${NC}  (${dnstt_tag})"
+    echo -e "  Slipstream + SSH:    ${GREEN}s2.${DOMAIN}${NC}  (${slip_ssh_tag})"
+    echo -e "  DNSTT + SSH:         ${GREEN}ds2.${DOMAIN}${NC}  (${dnstt_ssh_tag})"
+    echo ""
+
+    if [[ -n "$DNSTT_PUBKEY" ]]; then
+        echo -e "  ${BOLD}DNSTT Public Key${NC}"
+        echo -e "  ${DIM}────────────────────────────────────────${NC}"
+        echo -e "  ${GREEN}${DNSTT_PUBKEY}${NC}"
+        echo ""
+    fi
+
+    echo -e "  ${DIM}To add more domains, run again: sudo bash $0 --add-domain${NC}"
+    echo ""
+}
+
 # ─── Main ───────────────────────────────────────────────────────────────────────
 
 main() {
@@ -1415,4 +1841,8 @@ main() {
     step_summary
 }
 
-main
+if [[ "$ADD_DOMAIN_MODE" == true ]]; then
+    do_add_domain
+else
+    main
+fi

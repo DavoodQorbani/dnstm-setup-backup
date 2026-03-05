@@ -72,7 +72,10 @@ Because the traffic looks like ordinary DNS resolution, it passes through filter
      |                    (Noise + Curve25519)
      |
      +---> s2.domain ---> Slipstream ---> SSH Tunnel ------------> 🌐 Internet
-                          (QUIC + TLS)   (port forwarding)
+     |                    (QUIC + TLS)   (port forwarding)
+     |
+     +---> ds2.domain --> DNSTT --------> SSH Tunnel ------------> 🌐 Internet
+                          (Noise + Curve25519) (port forwarding)
 ```
 
 ### 🔗 How DNS Delegation Works
@@ -101,13 +104,14 @@ When someone queries `t2.yourdomain.com`, the global DNS system follows this cha
 | 🧦 **microsocks** | SOCKS5 proxy | Lightweight proxy shared by all tunnels (port auto-assigned by dnstm) |
 | 👤 **sshtun-user** | SSH user manager | *(Optional)* Creates restricted users that can only do port forwarding |
 
-### 🚇 Three Tunnel Types
+### 🚇 Four Tunnel Types
 
 | Tunnel | Subdomain | Transport | Backend | Use Case |
 |---|---|---|---|---|
 | ⚡ **slip1** | `t2.domain` | Slipstream (QUIC) | SOCKS | Fastest — recommended for most users |
 | 🔐 **dnstt1** | `d2.domain` | DNSTT (Noise) | SOCKS | Fallback if Slipstream is blocked |
 | 🔑 **slip-ssh** | `s2.domain` | Slipstream (QUIC) | SSH | When you need per-user authentication |
+| 🔑 **dnstt-ssh** | `ds2.domain` | DNSTT (Noise) | SSH | SSH fallback if Slipstream is blocked |
 
 > 🧦 **SOCKS backend:** Anyone who knows the domain can connect. Simpler, faster, no login required.
 >
@@ -146,6 +150,16 @@ sudo bash dnstm-setup.sh
 ```
 
 > 💡 **Tip:** Press **h** at any prompt for detailed help on that step.
+
+### Add a Backup Domain
+
+Already set up? Add another domain to the same server as a fallback:
+
+```bash
+sudo bash dnstm-setup.sh --add-domain
+```
+
+This creates a new set of tunnels on the same server with a different domain. If one domain gets blocked, the other still works.
 
 ---
 
@@ -210,10 +224,11 @@ The wizard has **12 steps**. Here's what each one does:
 <details>
 <summary><b>Step 7 — 🚇 Create Tunnels</b></summary>
 
-- Creates 3 tunnels using `dnstm tunnel add`:
+- Creates 4 tunnels using `dnstm tunnel add`:
   - `slip1` — Slipstream + SOCKS on `t2.yourdomain.com`
   - `dnstt1` — DNSTT + SOCKS on `d2.yourdomain.com`
   - `slip-ssh` — Slipstream + SSH on `s2.yourdomain.com`
+  - `dnstt-ssh` — DNSTT + SSH on `ds2.yourdomain.com`
 - Extracts and displays the DNSTT public key (needed for client config)
 - Handles "already exists" gracefully on re-runs
 </details>
@@ -222,7 +237,7 @@ The wizard has **12 steps**. Here's what each one does:
 <summary><b>Step 8 — ▶️ Start Services</b></summary>
 
 - Starts the DNS Router
-- Starts all 3 tunnels
+- Starts all 4 tunnels
 - Shows current tunnel status via `dnstm tunnel list`
 - Handles "already running" gracefully
 </details>
@@ -260,7 +275,7 @@ Runs 4 automated tests:
 
 Displays everything you need:
 - Server IP and domain
-- All 3 tunnel endpoints
+- All 4 tunnel endpoints
 - DNSTT public key
 - SSH tunnel credentials (if configured)
 - List of DNS resolvers for SlipNet
@@ -285,15 +300,16 @@ Create these records in your **Cloudflare** dashboard:
 
 > ☝️ This tells the internet: *"ns.yourdomain.com is at this IP address."*
 
-### Records 2-4 — NS Records (Delegation)
+### Records 2-5 — NS Records (Delegation)
 
 | Type | Name | Target |
 |---|---|---|
 | `NS` | `t2` | `ns.yourdomain.com` |
 | `NS` | `d2` | `ns.yourdomain.com` |
 | `NS` | `s2` | `ns.yourdomain.com` |
+| `NS` | `ds2` | `ns.yourdomain.com` |
 
-> ☝️ These tell the internet: *"For queries about t2/d2/s2.yourdomain.com, ask ns.yourdomain.com (your server)."*
+> ☝️ These tell the internet: *"For queries about t2/d2/s2/ds2.yourdomain.com, ask ns.yourdomain.com (your server)."*
 
 ### ⚠️ Common Mistakes
 
@@ -632,9 +648,10 @@ Made By **SamNet Technologies** — Saman
      v
   🔀 DNS Router (مالتی‌پلکسر)
      |
-     +---> t2.domain ---> Slipstream ---> microsocks (SOCKS5) ---> 🌐 اینترنت
-     +---> d2.domain ---> DNSTT --------> microsocks (SOCKS5) ---> 🌐 اینترنت
-     +---> s2.domain ---> Slip+SSH -----> تانل SSH --------------> 🌐 اینترنت
+     +---> t2.domain  ---> Slipstream ---> microsocks (SOCKS5) ---> 🌐 اینترنت
+     +---> d2.domain  ---> DNSTT --------> microsocks (SOCKS5) ---> 🌐 اینترنت
+     +---> s2.domain  ---> Slip+SSH -----> تانل SSH --------------> 🌐 اینترنت
+     +---> ds2.domain --> DNSTT+SSH ----> تانل SSH --------------> 🌐 اینترنت
 ```
 
 <div dir="rtl">
@@ -674,6 +691,20 @@ sudo bash dnstm-setup.sh
 <div dir="rtl">
 
 > 💡 در هر مرحله کلید **h** را بزنید تا راهنمای کامل آن بخش نمایش داده شود.
+
+### افزودن دامنه پشتیبان
+
+اگر قبلاً نصب انجام شده، می‌توانید دامنه دیگری به همان سرور اضافه کنید:
+
+</div>
+
+```bash
+sudo bash dnstm-setup.sh --add-domain
+```
+
+<div dir="rtl">
+
+اگر یک دامنه مسدود شود، دامنه دیگر همچنان کار می‌کند.
 
 ---
 
@@ -719,7 +750,7 @@ sudo bash dnstm-setup.sh
 4. 🔓 **آزادسازی پورت 53** — غیرفعال کردن systemd-resolved در صورت نیاز
 5. 📥 **نصب dnstm** — دانلود و نصب مدیر تانل DNS
 6. 🔍 **بررسی پورت 53** — تأیید اینکه DNS Router روی پورت 53 گوش می‌دهد
-7. 🚇 **ایجاد تانل‌ها** — ساخت ۳ تانل (Slipstream+SOCKS، DNSTT+SOCKS، Slipstream+SSH)
+7. 🚇 **ایجاد تانل‌ها** — ساخت ۴ تانل (Slipstream+SOCKS، DNSTT+SOCKS، Slipstream+SSH، DNSTT+SSH)
 8. ▶️ **شروع سرویس‌ها** — راه‌اندازی روتر و تمام تانل‌ها
 9. 🧦 **بررسی پروکسی SOCKS** — تست microsocks (تشخیص خودکار پورت)
 10. 👤 **کاربر SSH** (اختیاری) — ایجاد کاربر محدود برای تانل SSH
@@ -728,13 +759,14 @@ sudo bash dnstm-setup.sh
 
 ---
 
-## 🚇 سه نوع تانل
+## 🚇 چهار نوع تانل
 
 | تانل | ساب‌دامین | پروتکل | سرعت | توضیح |
 |---|---|---|---|---|
 | ⚡ **Slipstream + SOCKS** | `t2` | QUIC + TLS | ~63 KB/s | سریع‌ترین — پیشنهادی برای اکثر کاربران |
 | 🔐 **DNSTT + SOCKS** | `d2` | Noise + Curve25519 | ~42 KB/s | جایگزین اگر Slipstream مسدود شود |
 | 🔑 **Slipstream + SSH** | `s2` | QUIC + TLS + SSH | ~60 KB/s | نیاز به نام کاربری و رمز عبور |
+| 🔑 **DNSTT + SSH** | `ds2` | Noise + Curve25519 + SSH | ~40 KB/s | جایگزین SSH اگر Slipstream مسدود شود |
 
 > 🧦 **بک‌اند SOCKS:** هر کسی که دامنه را بداند می‌تواند وصل شود. ساده‌تر و سریع‌تر.
 >
