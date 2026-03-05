@@ -435,7 +435,13 @@ show_help_menu() {
             5) help_topic_ssh ;;
             6) help_topic_architecture ;;
             7) help_topic_about ;;
-            *) echo ""; return ;;
+            *)
+                if [[ -n "${choice:-}" ]]; then
+                    echo -e "  ${WARN} Invalid choice. Please pick 1–7 or Enter to go back."
+                fi
+                echo ""
+                return
+                ;;
         esac
     done
 }
