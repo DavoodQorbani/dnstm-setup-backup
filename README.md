@@ -224,11 +224,12 @@ The wizard has **12 steps**. Here's what each one does:
 <details>
 <summary><b>Step 7 — 🚇 Create Tunnels</b></summary>
 
+- Asks for DNSTT MTU size (default 1232, range 512–1400) — useful for networks with packet size restrictions
 - Creates 4 tunnels using `dnstm tunnel add`:
   - `slip1` — Slipstream + SOCKS on `t2.yourdomain.com`
-  - `dnstt1` — DNSTT + SOCKS on `d2.yourdomain.com`
+  - `dnstt1` — DNSTT + SOCKS on `d2.yourdomain.com` (with configurable MTU)
   - `slip-ssh` — Slipstream + SSH on `s2.yourdomain.com`
-  - `dnstt-ssh` — DNSTT + SSH on `ds2.yourdomain.com`
+  - `dnstt-ssh` — DNSTT + SSH on `ds2.yourdomain.com` (with configurable MTU)
 - Extracts and displays the DNSTT public key (needed for client config)
 - Handles "already exists" gracefully on re-runs
 </details>
@@ -251,23 +252,26 @@ The wizard has **12 steps**. Here's what each one does:
 </details>
 
 <details>
-<summary><b>Step 10 — 👤 SSH Tunnel User (Optional)</b></summary>
+<summary><b>Step 10 — 👤 SSH Tunnel User</b></summary>
 
-- You can skip this step entirely
+- **Required for SSH tunnels (s2/ds2) to work** — skipping means SSH tunnels won't function
 - Downloads `sshtun-user` tool if not installed
 - Configures SSH with security restrictions
 - Creates a restricted user that can only do SSH port forwarding
 - Asks for username (default: "tunnel") and password
+- Shows how to create one later if skipped
 </details>
 
 <details>
 <summary><b>Step 11 — 🧪 Verification Tests</b></summary>
 
-Runs 4 automated tests:
+Runs 6 automated tests:
 1. **SOCKS proxy** — HTTP request through microsocks
 2. **Tunnel status** — Checks all tunnels are running
 3. **DNS Router** — Verifies router is active
 4. **Port 53** — Confirms dnstm is on port 53
+5. **DNS delegation** — End-to-end reachability via public resolvers
+6. **SSH readiness** — Verifies sshd is running and tunnel user was created
 </details>
 
 <details>
@@ -277,7 +281,8 @@ Displays everything you need:
 - Server IP and domain
 - All 4 tunnel endpoints
 - DNSTT public key
-- SSH tunnel credentials (if configured)
+- `dnst://` share URLs for easy client configuration
+- SSH tunnel credentials (if configured) or warning if not set up
 - List of DNS resolvers for SlipNet
 - Client app download link
 - Useful management commands
@@ -327,6 +332,12 @@ Create these records in your **Cloudflare** dashboard:
 ```bash
 # 🚀 Run the interactive setup wizard
 sudo bash dnstm-setup.sh
+
+# 🔧 Set custom DNSTT MTU (default: 1232, range: 512-1400)
+sudo bash dnstm-setup.sh --mtu 1200
+
+# 🌐 Add a backup domain with custom MTU
+sudo bash dnstm-setup.sh --add-domain --mtu 1200
 
 # 🗑️ Remove all installed components
 sudo bash dnstm-setup.sh --uninstall
@@ -426,6 +437,10 @@ After setup, manage your tunnels with these commands:
 # 📋 View all tunnels and their status
 dnstm tunnel list
 
+# 🔗 Generate a shareable dnst:// URL for a tunnel
+dnstm tunnel share -t slip1
+dnstm tunnel share -t dnstt-ssh --user tunnel --password secret
+
 # 📊 Check DNS Router status
 dnstm router status
 
@@ -492,7 +507,7 @@ If you prefer to set things up manually step by step (without this script), foll
 
 ```bash
 # Check what's using port 53
-ss -ulnp | grep ':53 '
+ss -ulnp | grep -E ':53\b'
 
 # If systemd-resolved is still there, force it (stop socket too!)
 systemctl stop systemd-resolved.socket systemd-resolved.service
@@ -750,12 +765,12 @@ sudo bash dnstm-setup.sh --add-domain
 4. 🔓 **آزادسازی پورت 53** — غیرفعال کردن systemd-resolved در صورت نیاز
 5. 📥 **نصب dnstm** — دانلود و نصب مدیر تانل DNS
 6. 🔍 **بررسی پورت 53** — تأیید اینکه DNS Router روی پورت 53 گوش می‌دهد
-7. 🚇 **ایجاد تانل‌ها** — ساخت ۴ تانل (Slipstream+SOCKS، DNSTT+SOCKS، Slipstream+SSH، DNSTT+SSH)
+7. 🚇 **ایجاد تانل‌ها** — تنظیم MTU و ساخت ۴ تانل (Slipstream+SOCKS، DNSTT+SOCKS، Slipstream+SSH، DNSTT+SSH)
 8. ▶️ **شروع سرویس‌ها** — راه‌اندازی روتر و تمام تانل‌ها
 9. 🧦 **بررسی پروکسی SOCKS** — تست microsocks (تشخیص خودکار پورت)
-10. 👤 **کاربر SSH** (اختیاری) — ایجاد کاربر محدود برای تانل SSH
-11. 🧪 **تست‌های نهایی** — ۴ تست خودکار برای تأیید عملکرد
-12. 📊 **خلاصه** — نمایش تمام اطلاعات اتصال
+10. 👤 **کاربر SSH** — ایجاد کاربر محدود برای تانل SSH (بدون آن تانل‌های SSH کار نمی‌کنند)
+11. 🧪 **تست‌های نهایی** — ۶ تست خودکار برای تأیید عملکرد
+12. 📊 **خلاصه** — نمایش تمام اطلاعات اتصال و لینک‌های اشتراک‌گذاری dnst://
 
 ---
 
@@ -836,6 +851,9 @@ sudo bash dnstm-setup.sh --add-domain
 # 📋 نمایش تمام تانل‌ها و وضعیت آنها
 dnstm tunnel list
 
+# 🔗 ایجاد لینک اشتراک‌گذاری
+dnstm tunnel share -t slip1
+
 # 📊 بررسی وضعیت روتر
 dnstm router status
 
@@ -864,7 +882,7 @@ curl --socks5 127.0.0.1:<MICROSOCKS_PORT> https://api.ipify.org
 </div>
 
 ```bash
-ss -ulnp | grep ':53 '
+ss -ulnp | grep -E ':53\b'
 systemctl stop systemd-resolved.socket systemd-resolved.service
 systemctl mask systemd-resolved.socket systemd-resolved.service
 pkill -9 systemd-resolve

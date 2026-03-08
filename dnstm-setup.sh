@@ -464,6 +464,7 @@ show_help() {
     echo -e "${BOLD}USAGE${NC}"
     echo "  sudo bash dnstm-setup.sh              Run interactive setup"
     echo "  sudo bash dnstm-setup.sh --add-domain  Add a backup domain to existing setup"
+    echo "  sudo bash dnstm-setup.sh --mtu 1200    Set DNSTT MTU (default: 1232)"
     echo "  sudo bash dnstm-setup.sh --harden      Apply security hardening only"
     echo "  sudo bash dnstm-setup.sh --uninstall   Remove everything"
     echo "  bash dnstm-setup.sh --help             Show this help"
@@ -473,6 +474,7 @@ show_help() {
     echo "  --help         Show this help message"
     echo "  --about        Show project information and credits"
     echo "  --add-domain   Add another domain to an existing server (backup/fallback)"
+    echo "  --mtu <value>  Set DNSTT MTU size (512-1400, default: 1232)"
     echo "  --harden       Apply service and resolver hardening to an existing setup"
     echo "  --uninstall    Remove all installed components"
     echo ""
@@ -866,37 +868,46 @@ do_uninstall() {
 
 ADD_DOMAIN_MODE=false
 HARDEN_ONLY_MODE=false
+DNSTT_MTU=1232
 
-case "${1:-}" in
-    --help|-h)
-        show_help
-        exit 0
-        ;;
-    --about)
-        show_about
-        exit 0
-        ;;
-    --uninstall)
-        do_uninstall
-        exit 0
-        ;;
-    --add-domain)
-        ADD_DOMAIN_MODE=true
-        ;;
-    --harden)
-        HARDEN_ONLY_MODE=true
-        ;;
-    "")
-        # No args, continue with setup
-        ADD_DOMAIN_MODE=false
-        HARDEN_ONLY_MODE=false
-        ;;
-    *)
-        echo "Unknown option: $1"
-        echo "Use --help for usage information."
-        exit 1
-        ;;
-esac
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --help|-h)
+            show_help
+            exit 0
+            ;;
+        --about)
+            show_about
+            exit 0
+            ;;
+        --uninstall)
+            do_uninstall
+            exit 0
+            ;;
+        --add-domain)
+            ADD_DOMAIN_MODE=true
+            shift
+            ;;
+        --harden)
+            HARDEN_ONLY_MODE=true
+            shift
+            ;;
+        --mtu)
+            if [[ -n "${2:-}" ]] && [[ "$2" =~ ^[0-9]+$ ]] && [[ "$2" -ge 512 ]] && [[ "$2" -le 1400 ]]; then
+                DNSTT_MTU="$2"
+                shift 2
+            else
+                echo "Error: --mtu requires a value between 512 and 1400"
+                exit 1
+            fi
+            ;;
+        *)
+            echo "Unknown option: $1"
+            echo "Use --help for usage information."
+            exit 1
+            ;;
+    esac
+done
 
 # ─── Variables (populated during setup) ─────────────────────────────────────────
 
@@ -1285,6 +1296,17 @@ step_create_tunnels() {
     print_info "Creating 4 tunnels for domain: ${BOLD}${DOMAIN}${NC}"
     echo ""
 
+    # Ask for DNSTT MTU (use CLI value as default if provided via --mtu)
+    local mtu_input
+    mtu_input=$(prompt_input "DNSTT MTU size (512-1400, affects packet size)" "$DNSTT_MTU")
+    if [[ "$mtu_input" =~ ^[0-9]+$ ]] && [[ "$mtu_input" -ge 512 ]] && [[ "$mtu_input" -le 1400 ]]; then
+        DNSTT_MTU="$mtu_input"
+    else
+        print_warn "Invalid MTU value; using default ${DNSTT_MTU}"
+    fi
+    print_ok "DNSTT MTU: ${DNSTT_MTU}"
+    echo ""
+
     # Tunnel 1: Slipstream + SOCKS
     echo -e "  ${DIM}───────────────────────────────────────────────${NC}"
     echo -e "  ${BOLD}Tunnel 1: Slipstream + SOCKS${NC}"
@@ -1303,7 +1325,7 @@ step_create_tunnels() {
     echo -e "  ${BOLD}Tunnel 2: DNSTT + SOCKS${NC}"
     echo ""
     local dnstt_output
-    dnstt_output=$(dnstm tunnel add --transport dnstt --backend socks --domain "d2.${DOMAIN}" --tag dnstt1 2>&1) || true
+    dnstt_output=$(dnstm tunnel add --transport dnstt --backend socks --domain "d2.${DOMAIN}" --tag dnstt1 --mtu "$DNSTT_MTU" 2>&1) || true
     echo "$dnstt_output"
 
     # Try to extract DNSTT public key
@@ -1341,7 +1363,7 @@ step_create_tunnels() {
     echo -e "  ${DIM}───────────────────────────────────────────────${NC}"
     echo -e "  ${BOLD}Tunnel 4: DNSTT + SSH${NC}"
     echo ""
-    if dnstm tunnel add --transport dnstt --backend ssh --domain "ds2.${DOMAIN}" --tag dnstt-ssh 2>&1; then
+    if dnstm tunnel add --transport dnstt --backend ssh --domain "ds2.${DOMAIN}" --tag dnstt-ssh --mtu "$DNSTT_MTU" 2>&1; then
         print_ok "Created: dnstt-ssh (DNSTT + SSH) on ds2.${DOMAIN}"
         any_created=true
     else
@@ -1792,6 +1814,26 @@ step_summary() {
         echo ""
     fi
 
+    # Generate share URLs
+    echo -e "  ${BOLD}Share URLs (dnst://)${NC}"
+    echo -e "  ${DIM}────────────────────────────────────────${NC}"
+    local share_url
+    for tag in slip1 dnstt1; do
+        share_url=$(dnstm tunnel share -t "$tag" 2>/dev/null || true)
+        if [[ -n "$share_url" ]]; then
+            echo -e "  ${GREEN}${tag}:${NC} ${share_url}"
+        fi
+    done
+    if [[ "$SSH_SETUP_DONE" == true && -n "$SSH_USER" && -n "$SSH_PASS" ]]; then
+        for tag in slip-ssh dnstt-ssh; do
+            share_url=$(dnstm tunnel share -t "$tag" --user "$SSH_USER" --password "$SSH_PASS" 2>/dev/null || true)
+            if [[ -n "$share_url" ]]; then
+                echo -e "  ${GREEN}${tag}:${NC} ${share_url}"
+            fi
+        done
+    fi
+    echo ""
+
     if [[ "$SSH_SETUP_DONE" == true ]]; then
         echo -e "  ${BOLD}SSH Tunnel User${NC}"
         echo -e "  ${DIM}────────────────────────────────────────${NC}"
@@ -1825,6 +1867,7 @@ step_summary() {
     echo -e "  ${BOLD}Useful Commands${NC}"
     echo -e "  ${DIM}────────────────────────────────────────${NC}"
     echo "  dnstm tunnel list               Show all tunnels"
+    echo "  dnstm tunnel share -t <tag>     Generate share URL"
     echo "  dnstm router status             Show router status"
     echo "  dnstm router logs               View router logs"
     echo "  dnstm tunnel logs --tag slip1   View tunnel logs"
@@ -1960,6 +2003,17 @@ do_add_domain() {
     print_info "Creating 4 tunnels (set #${num}) for domain: ${BOLD}${DOMAIN}${NC}"
     echo ""
 
+    # Ask for DNSTT MTU (use CLI value as default if provided via --mtu)
+    local mtu_input
+    mtu_input=$(prompt_input "DNSTT MTU size (512-1400, affects packet size)" "$DNSTT_MTU")
+    if [[ "$mtu_input" =~ ^[0-9]+$ ]] && [[ "$mtu_input" -ge 512 ]] && [[ "$mtu_input" -le 1400 ]]; then
+        DNSTT_MTU="$mtu_input"
+    else
+        print_warn "Invalid MTU value; using default ${DNSTT_MTU}"
+    fi
+    print_ok "DNSTT MTU: ${DNSTT_MTU}"
+    echo ""
+
     # Tunnel 1: Slipstream + SOCKS
     echo -e "  ${DIM}───────────────────────────────────────────────${NC}"
     echo -e "  ${BOLD}Tunnel: Slipstream + SOCKS${NC}"
@@ -1976,7 +2030,7 @@ do_add_domain() {
     echo -e "  ${BOLD}Tunnel: DNSTT + SOCKS${NC}"
     echo ""
     local dnstt_output
-    dnstt_output=$(dnstm tunnel add --transport dnstt --backend socks --domain "d2.${DOMAIN}" --tag "$dnstt_tag" 2>&1) || true
+    dnstt_output=$(dnstm tunnel add --transport dnstt --backend socks --domain "d2.${DOMAIN}" --tag "$dnstt_tag" --mtu "$DNSTT_MTU" 2>&1) || true
     echo "$dnstt_output"
 
     DNSTT_PUBKEY=""
@@ -2009,7 +2063,7 @@ do_add_domain() {
     echo -e "  ${DIM}───────────────────────────────────────────────${NC}"
     echo -e "  ${BOLD}Tunnel: DNSTT + SSH${NC}"
     echo ""
-    if dnstm tunnel add --transport dnstt --backend ssh --domain "ds2.${DOMAIN}" --tag "$dnstt_ssh_tag" 2>&1; then
+    if dnstm tunnel add --transport dnstt --backend ssh --domain "ds2.${DOMAIN}" --tag "$dnstt_ssh_tag" --mtu "$DNSTT_MTU" 2>&1; then
         print_ok "Created: ${dnstt_ssh_tag} (DNSTT + SSH) on ds2.${DOMAIN}"
     else
         print_warn "Tunnel ${dnstt_ssh_tag} may already exist or creation failed"
@@ -2098,6 +2152,24 @@ do_add_domain() {
         echo -e "  ${GREEN}${DNSTT_PUBKEY}${NC}"
         echo ""
     fi
+
+    # Generate share URLs for new tunnels
+    echo -e "  ${BOLD}Share URLs (dnst://)${NC}"
+    echo -e "  ${DIM}────────────────────────────────────────${NC}"
+    local share_url
+    for tag in "$slip_tag" "$dnstt_tag"; do
+        share_url=$(dnstm tunnel share -t "$tag" 2>/dev/null || true)
+        if [[ -n "$share_url" ]]; then
+            echo -e "  ${GREEN}${tag}:${NC} ${share_url}"
+        fi
+    done
+    for tag in "$slip_ssh_tag" "$dnstt_ssh_tag"; do
+        share_url=$(dnstm tunnel share -t "$tag" 2>/dev/null || true)
+        if [[ -n "$share_url" ]]; then
+            echo -e "  ${GREEN}${tag}:${NC} ${share_url}"
+        fi
+    done
+    echo ""
 
     echo -e "  ${DIM}To add more domains, run again: sudo bash $0 --add-domain${NC}"
     echo ""
