@@ -20,6 +20,7 @@ Deploys [dnstm](https://github.com/net2share/dnstm) DNS tunnel servers with **Sl
 - [📱 Client Apps](#-client-apps)
 - [🛠️ Management Commands](#️-management-commands)
 - [👤 SSH Tunnel User Management](#-ssh-tunnel-user-management)
+- [🔐 SOCKS Proxy Authentication](#-socks-proxy-authentication)
 - [🗑️ Uninstall](#️-uninstall)
 - [📖 Manual Setup Guide](#-manual-setup-guide)
 - [🔧 Troubleshooting](#-troubleshooting)
@@ -114,7 +115,7 @@ When someone queries `t2.yourdomain.com`, the global DNS system follows this cha
 | 🔑 **slip-ssh** | `s2.domain` | Slipstream (QUIC) | SSH | When you need per-user authentication |
 | 🔑 **dnstt-ssh** | `ds2.domain` | DNSTT (Noise) | SSH | SSH fallback if Slipstream is blocked |
 
-> 🧦 **SOCKS backend:** Anyone who knows the domain can connect. Simpler, faster, no login required.
+> 🧦 **SOCKS backend:** Optionally secured with SOCKS5 username/password authentication. Without auth, anyone who knows the domain can connect.
 >
 > 🔑 **SSH backend:** Requires username + password. Provides per-user access control. The SSH user is restricted — even if credentials leak, no one can access your server.
 
@@ -247,8 +248,13 @@ The wizard has **12 steps**. Here's what each one does:
 <details>
 <summary><b>Step 9 — 🧦 Verify SOCKS Proxy</b></summary>
 
+- **Asks if you want SOCKS5 authentication** — recommended for security
+  - If yes: prompts for username (default: `proxy`) and password
+  - Modifies the microsocks systemd service to require credentials
+  - If no: proxy runs open (anyone who knows the domain can connect)
 - Checks if microsocks is running (process or systemd service)
 - Starts it if not running
+- Applies SOCKS5 auth to microsocks if enabled (adds `-u`/`-P` flags to service)
 - Tests the SOCKS proxy by detecting the microsocks port and making a request through it
 </details>
 
@@ -283,7 +289,8 @@ Displays everything you need:
 - All 4 tunnel endpoints
 - DNSTT public key
 - `dnst://` share URLs for dnstc CLI client
-- `slipnet://` deep-link URLs for SlipNet Android app (tap to import)
+- `slipnet://` deep-link URLs for SlipNet Android app (tap to import) — includes SOCKS credentials when auth is enabled
+- SOCKS proxy credentials (if authentication was enabled) or warning if open
 - SSH tunnel credentials (if configured) or warning if not set up
 - List of DNS resolvers for SlipNet
 - Client app download link
@@ -332,8 +339,11 @@ Create these records in your **Cloudflare** dashboard:
 ## ⌨️ Usage
 
 ```bash
-# 🚀 Run the interactive setup wizard
+# 🚀 Run the interactive setup wizard (first time)
 sudo bash dnstm-setup.sh
+
+# 🎛️ Post-setup management menu (all actions in one place)
+sudo bash dnstm-setup.sh --manage
 
 # 🔧 Set custom DNSTT MTU (default: 1232, range: 512-1400)
 sudo bash dnstm-setup.sh --mtu 1200
@@ -341,10 +351,21 @@ sudo bash dnstm-setup.sh --mtu 1200
 # 🌐 Add a backup domain with custom MTU
 sudo bash dnstm-setup.sh --add-domain --mtu 1200
 
+# 🚇 Add a single tunnel (interactive)
+sudo bash dnstm-setup.sh --add-tunnel
+
+# ❌ Remove a specific tunnel (interactive picker)
+sudo bash dnstm-setup.sh --remove-tunnel
+# Or specify the tag directly
+sudo bash dnstm-setup.sh --remove-tunnel slip1
+
 # 👤 Manage SSH tunnel users (add, list, update, delete)
 sudo bash dnstm-setup.sh --users
 
-# 🗑️ Remove all installed components
+# 📊 Show all tunnels, credentials, and share URLs
+sudo bash dnstm-setup.sh --status
+
+# 🗑️ Remove ALL installed components (nuclear option)
 sudo bash dnstm-setup.sh --uninstall
 
 # ❓ Show help (no root needed)
@@ -454,6 +475,19 @@ The setup generates two types of share URLs for easy client configuration:
 After setup, manage your tunnels with these commands:
 
 ```bash
+# 🎛️ Interactive management menu (all actions below in one menu)
+sudo bash dnstm-setup.sh --manage
+
+# 📊 Show everything: tunnels, credentials, share URLs (all in one)
+sudo bash dnstm-setup.sh --status
+
+# 🚇 Add a single tunnel (interactive — pick transport, backend, domain, tag)
+sudo bash dnstm-setup.sh --add-tunnel
+
+# ❌ Remove a specific tunnel (interactive picker or pass tag directly)
+sudo bash dnstm-setup.sh --remove-tunnel
+sudo bash dnstm-setup.sh --remove-tunnel slip1
+
 # 📋 View all tunnels and their status
 dnstm tunnel list
 
@@ -484,7 +518,10 @@ dnstm router stop
 dnstm router start
 
 # 🧪 Test the SOCKS proxy locally (check port with: ss -tlnp | grep microsocks)
+# Without authentication:
 curl --socks5 127.0.0.1:<MICROSOCKS_PORT> https://api.ipify.org
+# With SOCKS5 authentication:
+curl --socks5-basic --proxy socks5://127.0.0.1:<MICROSOCKS_PORT> --proxy-user user:pass https://api.ipify.org
 ```
 
 ---
@@ -510,6 +547,54 @@ This opens an interactive menu:
 > **What are SSH tunnel users?** These are restricted system users that can only create SSH tunnels (SOCKS proxy, port forwarding) — they have no shell access and cannot run commands on your server. They're required for the SSH-based tunnels (`s2` and `ds2` subdomains).
 
 If `sshtun-user` is not installed, the script will automatically download and configure it on first run.
+
+---
+
+## 🔐 SOCKS Proxy Authentication
+
+During setup (Step 9), the wizard asks whether to enable SOCKS5 authentication on the microsocks proxy. This controls access to the **SOCKS tunnels** (`t2` and `d2` subdomains).
+
+### With Authentication (Recommended)
+
+When enabled, microsocks requires a **username and password** for every SOCKS5 connection. This means:
+- Only clients with the correct credentials can use the tunnel
+- The `slipnet://` share URLs automatically include the credentials (clients auto-configure)
+- The `authMode` field in SlipNet is set to `1` (username/password)
+
+The credentials are applied by adding `-u user -P pass` flags to the microsocks systemd service.
+
+### Without Authentication
+
+When disabled, the proxy is **open** — anyone who can resolve the DNS tunnel domain can connect. Security relies solely on the domain being secret.
+
+### Changing Auth After Setup
+
+To **add** authentication to an existing open proxy:
+
+```bash
+# 1. Edit the microsocks service
+sudo systemctl edit --full microsocks.service
+
+# 2. Find the ExecStart line and append:   -u youruser -P yourpass
+#    Example: ExecStart=/usr/local/bin/microsocks -p 19801 -u proxy -P s3cret
+
+# 3. Reload and restart
+sudo systemctl daemon-reload
+sudo systemctl restart microsocks
+```
+
+To **remove** authentication:
+
+```bash
+# 1. Edit the service and remove the -u and -P flags from ExecStart
+sudo systemctl edit --full microsocks.service
+
+# 2. Reload and restart
+sudo systemctl daemon-reload
+sudo systemctl restart microsocks
+```
+
+> **Note:** When adding a backup domain with `--add-domain`, the script auto-detects existing SOCKS authentication from the microsocks service and includes the credentials in the generated share URLs.
 
 ---
 
@@ -827,10 +912,10 @@ sudo bash dnstm-setup.sh --users
 6. 🔍 **بررسی پورت 53** — تأیید اینکه DNS Router روی پورت 53 گوش می‌دهد
 7. 🚇 **ایجاد تانل‌ها** — تنظیم MTU و ساخت ۴ تانل (Slipstream+SOCKS، DNSTT+SOCKS، Slipstream+SSH، DNSTT+SSH)
 8. ▶️ **شروع سرویس‌ها** — راه‌اندازی روتر و تمام تانل‌ها
-9. 🧦 **بررسی پروکسی SOCKS** — تست microsocks (تشخیص خودکار پورت)
+9. 🧦 **بررسی پروکسی SOCKS** — انتخاب فعال‌سازی احراز هویت SOCKS5 (نام کاربری/رمز عبور)، تست microsocks (تشخیص خودکار پورت)
 10. 👤 **کاربر SSH** — ایجاد کاربر محدود برای تانل SSH (بدون آن تانل‌های SSH کار نمی‌کنند)
 11. 🧪 **تست‌های نهایی** — ۶ تست خودکار برای تأیید عملکرد
-12. 📊 **خلاصه** — نمایش تمام اطلاعات اتصال، لینک‌های dnst:// (برای dnstc) و slipnet:// (برای اپ SlipNet)
+12. 📊 **خلاصه** — نمایش تمام اطلاعات اتصال، اطلاعات احراز هویت SOCKS، لینک‌های dnst:// (برای dnstc) و slipnet:// (برای اپ SlipNet)
 
 ---
 
@@ -843,7 +928,7 @@ sudo bash dnstm-setup.sh --users
 | 🔑 **Slipstream + SSH** | `s2` | QUIC + TLS + SSH | ~60 KB/s | نیاز به نام کاربری و رمز عبور |
 | 🔑 **DNSTT + SSH** | `ds2` | Noise + Curve25519 + SSH | ~40 KB/s | جایگزین SSH اگر Slipstream مسدود شود |
 
-> 🧦 **بک‌اند SOCKS:** هر کسی که دامنه را بداند می‌تواند وصل شود. ساده‌تر و سریع‌تر.
+> 🧦 **بک‌اند SOCKS:** امکان فعال‌سازی احراز هویت SOCKS5 با نام کاربری و رمز عبور. بدون احراز هویت، هر کسی که دامنه را بداند می‌تواند وصل شود.
 >
 > 🔑 **بک‌اند SSH:** نیاز به نام کاربری و رمز عبور. حتی اگر رمز لو برود، کاربر فقط می‌تواند تانل بزند و دسترسی shell ندارد.
 
@@ -923,6 +1008,19 @@ sudo bash dnstm-setup.sh --users
 </div>
 
 ```bash
+# 🎛️ منوی مدیریت تعاملی (تمام عملیات در یک منو)
+sudo bash dnstm-setup.sh --manage
+
+# 📊 نمایش همه چیز: تانل‌ها، اطلاعات احراز هویت، لینک‌های اشتراک‌گذاری
+sudo bash dnstm-setup.sh --status
+
+# 🚇 افزودن یک تانل (تعاملی — انتخاب پروتکل، بک‌اند، دامنه)
+sudo bash dnstm-setup.sh --add-tunnel
+
+# ❌ حذف یک تانل خاص (تعاملی یا مستقیم)
+sudo bash dnstm-setup.sh --remove-tunnel
+sudo bash dnstm-setup.sh --remove-tunnel slip1
+
 # 📋 نمایش تمام تانل‌ها و وضعیت آنها
 dnstm tunnel list
 
@@ -952,7 +1050,10 @@ dnstm router stop
 dnstm router start
 
 # 🧪 تست پروکسی SOCKS (بررسی پورت: ss -tlnp | grep microsocks)
+# بدون احراز هویت:
 curl --socks5 127.0.0.1:<MICROSOCKS_PORT> https://api.ipify.org
+# با احراز هویت SOCKS5:
+curl --socks5-basic --proxy socks5://127.0.0.1:<MICROSOCKS_PORT> --proxy-user user:pass https://api.ipify.org
 ```
 
 <div dir="rtl">

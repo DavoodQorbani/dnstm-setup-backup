@@ -463,16 +463,24 @@ show_help() {
     echo ""
     echo -e "${BOLD}USAGE${NC}"
     echo "  sudo bash dnstm-setup.sh              Run interactive setup"
+    echo "  sudo bash dnstm-setup.sh --manage      Post-setup management menu"
     echo "  sudo bash dnstm-setup.sh --add-domain  Add a backup domain to existing setup"
     echo "  sudo bash dnstm-setup.sh --mtu 1200    Set DNSTT MTU (default: 1232)"
+    echo "  sudo bash dnstm-setup.sh --add-tunnel   Add a single tunnel interactively"
+    echo "  sudo bash dnstm-setup.sh --remove-tunnel [tag]  Remove a specific tunnel"
     echo "  sudo bash dnstm-setup.sh --harden      Apply security hardening only"
     echo "  sudo bash dnstm-setup.sh --uninstall   Remove everything"
+    echo "  sudo bash dnstm-setup.sh --status      Show all tunnels & share URLs"
     echo "  bash dnstm-setup.sh --help             Show this help"
     echo "  bash dnstm-setup.sh --about            Show project info"
     echo ""
     echo -e "${BOLD}FLAGS${NC}"
     echo "  --help         Show this help message"
     echo "  --about        Show project information and credits"
+    echo "  --manage       Interactive management menu (all post-setup actions)"
+    echo "  --status       Show all tunnels, credentials, and share URLs"
+    echo "  --add-tunnel   Add a single tunnel (interactive: choose transport, backend, domain)"
+    echo "  --remove-tunnel [tag]  Remove a specific tunnel (interactive if no tag given)"
     echo "  --add-domain   Add another domain to an existing server (backup/fallback)"
     echo "  --users        Manage SSH tunnel users (add, list, update, delete)"
     echo "  --mtu <value>  Set DNSTT MTU size (512-1400, default: 1232)"
@@ -546,10 +554,211 @@ show_about() {
     echo ""
 }
 
+# ─── --status ───────────────────────────────────────────────────────────────────
+
+do_status() {
+    banner
+
+    # Warn if not root (ss -p and file reads may not work)
+    if [[ $EUID -ne 0 ]]; then
+        print_warn "Running without root — some info may be unavailable"
+        echo ""
+    fi
+
+    # Check dnstm is installed
+    if ! command -v dnstm &>/dev/null; then
+        print_fail "dnstm is not installed. Run the full setup first: sudo bash $0"
+        exit 1
+    fi
+
+    # Save/restore global DOMAIN so generate_slipnet_url() can read it
+    local _saved_domain="$DOMAIN"
+
+    # Detect server IP
+    local server_ip
+    server_ip=$(curl -4 -s --max-time 10 https://api.ipify.org 2>/dev/null || true)
+    if [[ -n "$server_ip" ]]; then
+        echo -e "  ${BOLD}Server IP:${NC} ${GREEN}${server_ip}${NC}"
+    fi
+    echo ""
+
+    # ─── Cache tunnel list output (reused throughout) ───
+    local tunnel_list_output
+    tunnel_list_output=$(dnstm tunnel list 2>/dev/null || true)
+
+    echo -e "  ${BOLD}Tunnel Status${NC}"
+    echo -e "  ${DIM}────────────────────────────────────────${NC}"
+    if [[ -n "$tunnel_list_output" ]]; then
+        echo "$tunnel_list_output"
+    else
+        print_warn "Could not get tunnel list"
+    fi
+    echo ""
+
+    # ─── Detect SOCKS auth ───
+    local socks_user="" socks_pass="" socks_auth=false
+    local svc_file="/etc/systemd/system/microsocks.service"
+    if [[ -f "$svc_file" ]]; then
+        local exec_line
+        exec_line=$(grep '^ExecStart=' "$svc_file" 2>/dev/null || true)
+        socks_user=$(echo "$exec_line" | sed -n 's/.*-u \([^ ]*\).*/\1/p' || true)
+        socks_pass=$(echo "$exec_line" | sed -n 's/.*-P \([^ ]*\).*/\1/p' || true)
+        if [[ -n "$socks_user" && -n "$socks_pass" ]]; then
+            socks_auth=true
+        fi
+    fi
+
+    echo -e "  ${BOLD}SOCKS Proxy Authentication${NC}"
+    echo -e "  ${DIM}────────────────────────────────────────${NC}"
+    if [[ "$socks_auth" == true ]]; then
+        echo -e "  Username:  ${GREEN}${socks_user}${NC}"
+        echo -e "  Password:  ${GREEN}${socks_pass}${NC}"
+    else
+        echo -e "  ${YELLOW}No authentication (open proxy)${NC}"
+    fi
+    echo ""
+
+    # ─── Detect microsocks port ───
+    local socks_port=""
+    socks_port=$(ss -tlnp 2>/dev/null | grep microsocks | awk '{for(i=1;i<=NF;i++) if($i ~ /:[0-9]+$/) {split($i,a,":"); print a[length(a)]; exit}}' || true)
+    if [[ -z "$socks_port" ]]; then
+        socks_port=$(sed -n 's/.*-p[[:space:]]*\([0-9]*\).*/\1/p' /etc/systemd/system/microsocks.service 2>/dev/null | head -1 || true)
+    fi
+    if [[ -n "$socks_port" ]]; then
+        echo -e "  ${BOLD}microsocks Port:${NC} ${GREEN}${socks_port}${NC}"
+        echo ""
+    fi
+
+    # ─── Collect all tunnel tags and their domains ───
+    local tags
+    tags=$(echo "$tunnel_list_output" | grep -o 'tag=[^ ]*' | sed 's/tag=//' || true)
+    if [[ -z "$tags" ]]; then
+        print_warn "No tunnels found"
+        return
+    fi
+
+    # ─── Detect SSH users (check if sshtun-user is available) ───
+    local ssh_user="" ssh_pass=""
+    local has_ssh_users=false
+    if command -v sshtun-user &>/dev/null; then
+        local user_list
+        user_list=$(sshtun-user list 2>/dev/null || true)
+        if [[ -n "$user_list" ]]; then
+            has_ssh_users=true
+            echo -e "  ${BOLD}SSH Tunnel Users${NC}"
+            echo -e "  ${DIM}────────────────────────────────────────${NC}"
+            echo "$user_list" | while IFS= read -r line; do
+                echo -e "  ${GREEN}${line}${NC}"
+            done
+            echo ""
+        fi
+    fi
+
+    # ─── Share URLs — dnst:// ───
+    echo -e "  ${BOLD}Share URLs — dnst:// (for dnstc CLI)${NC}"
+    echo -e "  ${DIM}────────────────────────────────────────${NC}"
+    local share_url
+    for tag in $tags; do
+        # SOCKS tunnels — no SSH credentials needed
+        if echo "$tag" | grep -qE '^(slip[0-9]+|dnstt[0-9]+)$'; then
+            share_url=$(dnstm tunnel share -t "$tag" 2>/dev/null || true)
+            if [[ -n "$share_url" ]]; then
+                echo -e "  ${GREEN}${tag}:${NC}"
+                echo "  ${share_url}"
+                echo ""
+            fi
+        fi
+    done
+    # SSH tunnels — need credentials
+    local ssh_tags
+    ssh_tags=$(echo "$tags" | grep -E 'ssh' || true)
+    if [[ -n "$ssh_tags" ]]; then
+        if [[ "$has_ssh_users" == true ]]; then
+            echo -e "  ${DIM}SSH tunnel share URLs require credentials:${NC}"
+            for tag in $ssh_tags; do
+                echo -e "  ${DIM}  dnstm tunnel share -t ${tag} --user <username> --password <pass>${NC}"
+            done
+        else
+            echo -e "  ${YELLOW}SSH tunnels: no users configured — create one with: sshtun-user create <user> --insecure-password <pass>${NC}"
+        fi
+        echo ""
+    fi
+
+    # ─── Share URLs — slipnet:// ───
+    # We need the domain for each tunnel to generate slipnet:// URLs
+    echo -e "  ${BOLD}Share URLs — slipnet:// (for SlipNet app)${NC}"
+    echo -e "  ${DIM}────────────────────────────────────────${NC}"
+
+    local s_user="" s_pass=""
+    if [[ "$socks_auth" == true ]]; then
+        s_user="$socks_user"
+        s_pass="$socks_pass"
+    fi
+
+    for tag in $tags; do
+        # Extract domain for this tunnel from dnstm
+        local tag_domain
+        tag_domain=$(echo "$tunnel_list_output" | awk -v t="tag=${tag}" '{for(i=1;i<=NF;i++) if($i==t){print;next}}' | grep -o 'domain=[^ ]*' | sed 's/domain=//' || true)
+        if [[ -z "$tag_domain" ]]; then
+            continue
+        fi
+
+        # Extract base domain (strip subdomain prefix)
+        DOMAIN=$(echo "$tag_domain" | sed 's/^[^.]*\.//')
+        local subdomain
+        subdomain=$(echo "$tag_domain" | sed 's/\..*//')
+
+        # Get DNSTT pubkey if it's a dnstt tunnel
+        local pubkey=""
+        if echo "$tag" | grep -q "^dnstt"; then
+            if [[ -f "/etc/dnstm/tunnels/${tag}/server.pub" ]]; then
+                pubkey=$(cat "/etc/dnstm/tunnels/${tag}/server.pub" 2>/dev/null || true)
+            fi
+        fi
+
+        local url=""
+        case "$tag" in
+            slip[0-9]*)
+                url=$(generate_slipnet_url "ss" "$subdomain" "" "" "" "$s_user" "$s_pass")
+                ;;
+            dnstt[0-9]*)
+                if [[ -n "$pubkey" ]]; then
+                    url=$(generate_slipnet_url "dnstt" "$subdomain" "$pubkey" "" "" "$s_user" "$s_pass")
+                fi
+                ;;
+            slip-ssh*)
+                echo -e "  ${DIM}${tag}: requires SSH credentials — generate after adding user${NC}"
+                continue
+                ;;
+            dnstt-ssh*)
+                echo -e "  ${DIM}${tag}: requires SSH credentials — generate after adding user${NC}"
+                continue
+                ;;
+        esac
+
+        if [[ -n "$url" ]]; then
+            echo -e "  ${GREEN}${tag}:${NC}"
+            echo "  ${url}"
+            echo ""
+        fi
+    done
+
+    echo -e "  ${BOLD}DNS Resolvers (use in SlipNet)${NC}"
+    echo -e "  ${DIM}────────────────────────────────────────${NC}"
+    echo "  8.8.8.8:53        (Google)"
+    echo "  1.1.1.1:53        (Cloudflare)"
+    echo "  9.9.9.9:53        (Quad9)"
+    echo "  208.67.222.222:53 (OpenDNS)"
+    echo ""
+
+    # Restore global DOMAIN
+    DOMAIN="$_saved_domain"
+}
+
 # ─── SlipNet URL Generator ────────────────────────────────────────────────────
 
 # Generate a slipnet:// deep-link URL for the SlipNet Android app.
-# Usage: generate_slipnet_url <tunnel_type> <subdomain> [pubkey] [ssh_user] [ssh_pass]
+# Usage: generate_slipnet_url <tunnel_type> <subdomain> [pubkey] [ssh_user] [ssh_pass] [socks_user] [socks_pass]
 #   tunnel_type: "ss", "dnstt", "slipstream_ssh", or "dnstt_ssh" (SlipNet constants)
 #   subdomain:   e.g. "t2" or "d2"
 #   pubkey:      DNSTT public key (required for dnstt, empty for slipstream)
@@ -561,13 +770,20 @@ generate_slipnet_url() {
     local pubkey="${3:-}"
     local ssh_user="${4:-}"
     local ssh_pass="${5:-}"
+    local socks_user="${6:-}"
+    local socks_pass="${7:-}"
     local name="${subdomain}.${DOMAIN}"
     local ns_domain="${subdomain}.${DOMAIN}"
     local resolver="8.8.8.8:53:0"
     local ssh_enabled="" ssh_port="22" ssh_host="127.0.0.1"
+    local auth_mode="0"
 
     if [[ -n "$ssh_user" && -n "$ssh_pass" ]]; then
         ssh_enabled="1"
+    fi
+
+    if [[ -n "$socks_user" && -n "$socks_pass" ]]; then
+        auth_mode="1"
     fi
 
     # v16 pipe-delimited format (36 fields):
@@ -578,7 +794,7 @@ generate_slipnet_url() {
     # 26:sshKeyPass 27:torBridges 28:dnsttAuthoritative 29:naivePort
     # 30:naiveUser 31:naivePass 32:isLocked 33:lockHash 34:expiration
     # 35:allowSharing 36:boundDeviceId
-    local data="16|${tunnel_type}|${name}|${ns_domain}|${resolver}|0|5000|bbr|1080|127.0.0.1|0|${pubkey}|||${ssh_enabled}|${ssh_user}|${ssh_pass}|${ssh_port}|0|${ssh_host}|0||udp|password|||0|0|443|||0||0|0|"
+    local data="16|${tunnel_type}|${name}|${ns_domain}|${resolver}|${auth_mode}|5000|bbr|1080|127.0.0.1|0|${pubkey}|${socks_user}|${socks_pass}|${ssh_enabled}|${ssh_user}|${ssh_pass}|${ssh_port}|0|${ssh_host}|0||udp|password|||0|0|443|||0||0|0|"
     echo "slipnet://$(echo -n "$data" | base64 -w0)"
 }
 
@@ -802,6 +1018,368 @@ do_harden() {
     print_ok "Hardening complete."
 }
 
+# ─── --remove-tunnel ─────────────────────────────────────────────────────────────
+
+do_remove_tunnel() {
+    local target_tag="$1"
+    banner
+
+    if [[ $EUID -ne 0 ]]; then
+        echo -e "  ${CROSS} Not running as root. Please run with: sudo bash $0 --remove-tunnel <tag>"
+        exit 1
+    fi
+
+    if ! command -v dnstm &>/dev/null; then
+        print_fail "dnstm is not installed. Nothing to remove."
+        exit 1
+    fi
+
+    # Show current tunnels
+    print_header "Remove Tunnel"
+    echo ""
+    print_info "Current tunnels:"
+    echo ""
+    dnstm tunnel list 2>/dev/null || true
+    echo ""
+
+    # If no tag given, ask interactively
+    if [[ -z "$target_tag" ]]; then
+        local tags
+        tags=$(dnstm tunnel list 2>/dev/null | grep -o 'tag=[^ ]*' | sed 's/tag=//' || true)
+        if [[ -z "$tags" ]]; then
+            print_warn "No tunnels found."
+            exit 0
+        fi
+
+        # Show numbered list
+        local i=1
+        local tag_arr=()
+        for tag in $tags; do
+            local domain_info
+            domain_info=$(dnstm tunnel list 2>/dev/null | awk -v t="tag=${tag}" '{for(i=1;i<=NF;i++) if($i==t){print;next}}' | grep -o 'domain=[^ ]*' | sed 's/domain=//' || true)
+            echo -e "  ${BOLD}${i})${NC}  ${tag}  ${DIM}(${domain_info})${NC}"
+            tag_arr+=("$tag")
+            i=$((i + 1))
+        done
+        echo -e "  ${BOLD}0)${NC}  Cancel"
+        echo ""
+
+        local choice
+        choice=$(prompt_input "Select tunnel to remove (1-${#tag_arr[@]})")
+        if [[ "$choice" == "0" || -z "$choice" ]]; then
+            print_info "Cancelled."
+            exit 0
+        fi
+        if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -le ${#tag_arr[@]} ]]; then
+            target_tag="${tag_arr[$((choice - 1))]}"
+        else
+            print_fail "Invalid selection."
+            exit 1
+        fi
+    fi
+
+    # Verify tunnel exists
+    if ! dnstm tunnel list 2>/dev/null | grep -o 'tag=[^ ]*' | grep -qxF "tag=${target_tag}"; then
+        print_fail "Tunnel '${target_tag}' not found."
+        echo ""
+        print_info "Available tunnels:"
+        dnstm tunnel list 2>/dev/null | grep -o 'tag=[^ ]*' | sed 's/tag=/  /' || true
+        exit 1
+    fi
+
+    local domain_info
+    domain_info=$(dnstm tunnel list 2>/dev/null | awk -v t="tag=${target_tag}" '{for(i=1;i<=NF;i++) if($i==t){print;next}}' | grep -o 'domain=[^ ]*' | sed 's/domain=//' || true)
+
+    echo ""
+    if ! prompt_yn "Remove tunnel '${target_tag}' (${domain_info})?" "n"; then
+        print_info "Cancelled."
+        exit 0
+    fi
+
+    echo ""
+
+    # Stop the tunnel
+    print_info "Stopping tunnel: ${target_tag}..."
+    if dnstm tunnel stop --tag "$target_tag" 2>/dev/null; then
+        print_ok "Stopped: ${target_tag}"
+    else
+        print_warn "Stop command failed (tunnel may already be stopped)"
+    fi
+
+    # Remove the tunnel
+    print_info "Removing tunnel: ${target_tag}..."
+    if dnstm tunnel remove --tag "$target_tag" 2>/dev/null; then
+        print_ok "Removed: ${target_tag}"
+    else
+        print_warn "Remove command returned an error (tunnel may already be gone)"
+    fi
+
+    # Restart router only if tunnels remain
+    local remaining
+    remaining=$(dnstm tunnel list 2>/dev/null | grep -o 'tag=[^ ]*' || true)
+    if [[ -n "$remaining" ]]; then
+        print_info "Restarting DNS Router..."
+        dnstm router stop 2>/dev/null || true
+        sleep 1
+        if dnstm router start 2>/dev/null; then
+            print_ok "DNS Router restarted"
+        else
+            print_warn "DNS Router restart may have issues. Check: dnstm router logs"
+        fi
+        echo ""
+        print_info "Remaining tunnels:"
+        echo ""
+        dnstm tunnel list 2>/dev/null || true
+    else
+        dnstm router stop 2>/dev/null || true
+        print_info "No tunnels remaining — DNS Router stopped"
+    fi
+    echo ""
+    print_ok "Tunnel '${target_tag}' removed."
+    echo ""
+}
+
+# ─── --add-tunnel ────────────────────────────────────────────────────────────────
+
+do_add_tunnel() {
+    banner
+
+    if [[ $EUID -ne 0 ]]; then
+        echo -e "  ${CROSS} Not running as root. Please run with: sudo bash $0 --add-tunnel"
+        exit 1
+    fi
+
+    if ! command -v dnstm &>/dev/null; then
+        print_fail "dnstm is not installed. Run the full setup first: sudo bash $0"
+        exit 1
+    fi
+
+    print_header "Add Single Tunnel"
+
+    # Show current tunnels
+    echo ""
+    print_info "Current tunnels:"
+    echo ""
+    dnstm tunnel list 2>/dev/null || print_info "(none)"
+    echo ""
+
+    # Detect server IP
+    SERVER_IP=$(curl -4 -s --max-time 10 https://api.ipify.org 2>/dev/null || true)
+    if [[ -n "$SERVER_IP" ]]; then
+        print_ok "Server IP: ${SERVER_IP}"
+    fi
+    echo ""
+
+    # 1. Choose transport
+    echo -e "  ${BOLD}Transport:${NC}"
+    echo -e "  ${BOLD}1)${NC}  Slipstream  ${DIM}(QUIC + TLS, faster ~63 KB/s)${NC}"
+    echo -e "  ${BOLD}2)${NC}  DNSTT       ${DIM}(Noise + Curve25519, ~42 KB/s)${NC}"
+    echo ""
+    local transport_choice
+    transport_choice=$(prompt_input "Select transport (1-2)" "1")
+    local transport
+    case "$transport_choice" in
+        1) transport="slipstream" ;;
+        2) transport="dnstt" ;;
+        *)
+            print_fail "Invalid selection. Use 1 or 2."
+            exit 1
+            ;;
+    esac
+    print_ok "Transport: ${transport}"
+    echo ""
+
+    # 2. Choose backend
+    echo -e "  ${BOLD}Backend:${NC}"
+    echo -e "  ${BOLD}1)${NC}  SOCKS  ${DIM}(connects to microsocks proxy)${NC}"
+    echo -e "  ${BOLD}2)${NC}  SSH    ${DIM}(connects via SSH port forwarding, requires SSH user)${NC}"
+    echo ""
+    local backend_choice
+    backend_choice=$(prompt_input "Select backend (1-2)" "1")
+    local backend
+    case "$backend_choice" in
+        1) backend="socks" ;;
+        2) backend="ssh" ;;
+        *)
+            print_fail "Invalid selection. Use 1 or 2."
+            exit 1
+            ;;
+    esac
+    print_ok "Backend: ${backend}"
+    echo ""
+
+    # 3. Get domain
+    local domain
+    domain=$(prompt_input "Enter the full tunnel domain (e.g. t2.example.com)")
+    domain=$(echo "$domain" | sed 's|^[[:space:]]*||;s|[[:space:]]*$||;s|^https\?://||;s|/.*$||')
+    if [[ -z "$domain" || ! "$domain" == *.*.* ]]; then
+        print_fail "Invalid domain. Must be a subdomain (e.g. t2.example.com, not example.com)"
+        exit 1
+    fi
+    print_ok "Domain: ${domain}"
+    echo ""
+
+    # 4. Get tag
+    local tag
+    tag=$(prompt_input "Enter a unique tag for this tunnel (e.g. slip1, dnstt2, my-tunnel)")
+    tag=$(echo "$tag" | sed 's|[[:space:]]||g')
+    if [[ -z "$tag" ]]; then
+        print_fail "Tag cannot be empty."
+        exit 1
+    fi
+    # Check if tag already exists
+    if dnstm tunnel list 2>/dev/null | grep -o 'tag=[^ ]*' | grep -qxF "tag=${tag}"; then
+        print_fail "Tunnel with tag '${tag}' already exists. Choose a different tag."
+        exit 1
+    fi
+    print_ok "Tag: ${tag}"
+    echo ""
+
+    # 5. MTU for DNSTT
+    local mtu_flag=""
+    if [[ "$transport" == "dnstt" ]]; then
+        local mtu_input
+        mtu_input=$(prompt_input "DNSTT MTU size (512-1400)" "$DNSTT_MTU")
+        if [[ "$mtu_input" =~ ^[0-9]+$ ]] && [[ "$mtu_input" -ge 512 ]] && [[ "$mtu_input" -le 1400 ]]; then
+            mtu_flag="--mtu $mtu_input"
+            print_ok "MTU: ${mtu_input}"
+        else
+            print_warn "Invalid MTU; using default ${DNSTT_MTU}"
+            mtu_flag="--mtu $DNSTT_MTU"
+        fi
+        echo ""
+    fi
+
+    # Confirm
+    echo -e "  ${DIM}───────────────────────────────────────────────${NC}"
+    echo -e "  ${BOLD}Creating tunnel:${NC}"
+    echo -e "  Transport: ${GREEN}${transport}${NC}"
+    echo -e "  Backend:   ${GREEN}${backend}${NC}"
+    echo -e "  Domain:    ${GREEN}${domain}${NC}"
+    echo -e "  Tag:       ${GREEN}${tag}${NC}"
+    echo ""
+
+    if ! prompt_yn "Create this tunnel?" "y"; then
+        print_info "Cancelled."
+        exit 0
+    fi
+
+    echo ""
+
+    # Create the tunnel
+    print_info "Creating tunnel: ${tag}..."
+    local create_output
+    # shellcheck disable=SC2086
+    create_output=$(dnstm tunnel add --transport "$transport" --backend "$backend" --domain "$domain" --tag "$tag" $mtu_flag 2>&1) || true
+    echo "$create_output"
+
+    if dnstm tunnel list 2>/dev/null | grep -o 'tag=[^ ]*' | grep -qxF "tag=${tag}"; then
+        print_ok "Created: ${tag}"
+    else
+        print_fail "Tunnel creation may have failed. Check output above."
+        exit 1
+    fi
+
+    # Show DNSTT pubkey if applicable
+    if [[ "$transport" == "dnstt" && -f "/etc/dnstm/tunnels/${tag}/server.pub" ]]; then
+        local pubkey
+        pubkey=$(cat "/etc/dnstm/tunnels/${tag}/server.pub" 2>/dev/null || true)
+        if [[ -n "$pubkey" ]]; then
+            echo ""
+            echo -e "  ${BOLD}${YELLOW}DNSTT Public Key (save this!):${NC}"
+            echo -e "  ${GREEN}${pubkey}${NC}"
+        fi
+    fi
+
+    echo ""
+
+    # Start the tunnel
+    print_info "Starting tunnel: ${tag}..."
+    if dnstm tunnel start --tag "$tag" 2>/dev/null; then
+        print_ok "Started: ${tag}"
+    else
+        print_warn "Could not start tunnel. Check: dnstm tunnel logs --tag ${tag}"
+    fi
+
+    # Restart router to pick up new config
+    print_info "Restarting DNS Router..."
+    dnstm router stop 2>/dev/null || true
+    sleep 1
+    if dnstm router start 2>/dev/null; then
+        print_ok "DNS Router restarted"
+    else
+        print_warn "DNS Router restart may have issues. Check: dnstm router logs"
+    fi
+
+    echo ""
+
+    # Show share URLs
+    local subdomain
+    subdomain=$(echo "$domain" | sed 's/\..*//')
+    local base_domain
+    base_domain=$(echo "$domain" | sed 's/^[^.]*\.//')
+
+    echo -e "  ${BOLD}Share URL — dnst:// (for dnstc CLI)${NC}"
+    echo -e "  ${DIM}────────────────────────────────────────${NC}"
+    local share_url
+    share_url=$(dnstm tunnel share -t "$tag" 2>/dev/null || true)
+    if [[ -n "$share_url" ]]; then
+        echo -e "  ${share_url}"
+    else
+        print_info "Share URL not available (generate later with: dnstm tunnel share -t ${tag})"
+    fi
+    echo ""
+
+    # Generate slipnet:// URL for non-SSH tunnels
+    if [[ "$backend" == "socks" ]]; then
+        # Detect existing SOCKS auth from microsocks service
+        local s_user="" s_pass=""
+        local svc_file="/etc/systemd/system/microsocks.service"
+        if [[ -f "$svc_file" ]]; then
+            local exec_line
+            exec_line=$(grep '^ExecStart=' "$svc_file" 2>/dev/null || true)
+            s_user=$(echo "$exec_line" | sed -n 's/.*-u \([^ ]*\).*/\1/p' || true)
+            s_pass=$(echo "$exec_line" | sed -n 's/.*-P \([^ ]*\).*/\1/p' || true)
+        fi
+
+        local pubkey_for_url=""
+        if [[ "$transport" == "dnstt" && -f "/etc/dnstm/tunnels/${tag}/server.pub" ]]; then
+            pubkey_for_url=$(cat "/etc/dnstm/tunnels/${tag}/server.pub" 2>/dev/null || true)
+        fi
+
+        local slipnet_type
+        case "$transport" in
+            slipstream) slipnet_type="ss" ;;
+            dnstt) slipnet_type="dnstt" ;;
+        esac
+
+        DOMAIN="$base_domain"
+        local slipnet_url
+        slipnet_url=$(generate_slipnet_url "$slipnet_type" "$subdomain" "$pubkey_for_url" "" "" "$s_user" "$s_pass")
+        echo -e "  ${BOLD}Share URL — slipnet:// (for SlipNet app)${NC}"
+        echo -e "  ${DIM}────────────────────────────────────────${NC}"
+        echo -e "  ${slipnet_url}"
+        echo ""
+    else
+        echo -e "  ${DIM}slipnet:// URL for SSH tunnels requires credentials.${NC}"
+        echo -e "  ${DIM}Use --status after creating an SSH user to see all share URLs.${NC}"
+        echo ""
+    fi
+    echo -e "  ${BOLD}Required DNS Record${NC}"
+    echo -e "  ${DIM}────────────────────────────────────────${NC}"
+    echo -e "  Make sure this NS record exists in Cloudflare for ${GREEN}${base_domain}${NC}:"
+    echo ""
+    echo -e "  Type: ${GREEN}NS${NC}  |  Name: ${GREEN}${subdomain}${NC}  |  Target: ${GREEN}ns.${base_domain}${NC}"
+    echo ""
+
+    print_info "All tunnels:"
+    echo ""
+    dnstm tunnel list 2>/dev/null || true
+    echo ""
+    print_ok "Tunnel '${tag}' added."
+    echo ""
+}
+
 # ─── --uninstall ────────────────────────────────────────────────────────────────
 
 do_uninstall() {
@@ -952,7 +1530,7 @@ do_manage_users() {
         echo ""
 
         local choice=""
-        read -rp "  Select [0-4]: " choice || true
+        read -rp "  Select [0-4]: " choice || break
 
         case "$choice" in
             1)
@@ -1035,6 +1613,98 @@ do_manage_users() {
     done
 }
 
+# ─── --manage ────────────────────────────────────────────────────────────────────
+
+do_manage() {
+    if [[ $EUID -ne 0 ]]; then
+        echo -e "  ${CROSS} Not running as root. Please run with: sudo bash $0 --manage"
+        exit 1
+    fi
+
+    if ! command -v dnstm &>/dev/null; then
+        print_fail "dnstm is not installed. Run the full setup first: sudo bash $0"
+        exit 1
+    fi
+
+    # Trap SIGINT in the parent so Ctrl+C only kills the subshell,
+    # not the entire manage menu. Restore default trap on exit.
+    trap '' INT
+
+    while true; do
+        banner
+        print_header "Management Menu"
+        echo ""
+
+        echo -e "  ${BOLD}1)${NC}  Show status          ${DIM}(tunnels, credentials, share URLs)${NC}"
+        echo -e "  ${BOLD}2)${NC}  Add tunnel            ${DIM}(single tunnel — pick transport & backend)${NC}"
+        echo -e "  ${BOLD}3)${NC}  Remove tunnel         ${DIM}(pick one to remove)${NC}"
+        echo -e "  ${BOLD}4)${NC}  Add backup domain     ${DIM}(new domain → 4 more tunnels)${NC}"
+        echo -e "  ${BOLD}5)${NC}  Manage SSH users      ${DIM}(add, list, update, delete)${NC}"
+        echo -e "  ${BOLD}6)${NC}  Apply hardening       ${DIM}(systemd security for all services)${NC}"
+        echo ""
+        echo -e "  ${DIM}──────────────────────────────────────────────${NC}"
+        echo -e "  ${BOLD}${RED}7)${NC}  ${RED}Uninstall everything${NC}"
+        echo ""
+        echo -e "  ${BOLD}0)${NC}  Exit"
+        echo ""
+
+        local choice=""
+        read -rp "  Select [0-7]: " choice || break
+
+        case "$choice" in
+            1)
+                ( trap - INT; do_status )  || true
+                ;;
+            2)
+                ( trap - INT; do_add_tunnel ) || true
+                ;;
+            3)
+                ( trap - INT; do_remove_tunnel "" ) || true
+                ;;
+            4)
+                ( trap - INT; do_add_domain ) || true
+                ;;
+            5)
+                ( trap - INT; do_manage_users ) || true
+                ;;
+            6)
+                ( trap - INT; do_harden ) || true
+                ;;
+            7)
+                ( trap - INT; do_uninstall ) || true
+                # If uninstall succeeded, dnstm is gone — exit menu
+                hash -d dnstm 2>/dev/null || true
+                if ! command -v dnstm &>/dev/null; then
+                    echo ""
+                    print_info "dnstm has been uninstalled. Exiting menu."
+                    break
+                fi
+                ;;
+            0|q|Q)
+                echo ""
+                break
+                ;;
+            "")
+                # Just Enter — redraw menu
+                continue
+                ;;
+            *)
+                print_warn "Invalid choice. Enter 0-7."
+                sleep 1
+                continue
+                ;;
+        esac
+
+        # Pause so user can read output before menu redraws
+        echo ""
+        echo -e "  ${DIM}Press Enter to return to menu...${NC}"
+        read -r || break
+    done
+
+    # Restore default SIGINT handling
+    trap - INT
+}
+
 # ─── Parse Arguments ────────────────────────────────────────────────────────────
 
 ADD_DOMAIN_MODE=false
@@ -1052,8 +1722,29 @@ while [[ $# -gt 0 ]]; do
             show_about
             exit 0
             ;;
+        --status)
+            do_status
+            exit 0
+            ;;
+        --manage)
+            do_manage
+            exit 0
+            ;;
         --uninstall)
             do_uninstall
+            exit 0
+            ;;
+        --remove-tunnel)
+            # If $2 looks like another flag (starts with --), treat as no tag given
+            if [[ -n "${2:-}" && "${2:0:2}" != "--" ]]; then
+                do_remove_tunnel "$2"
+            else
+                do_remove_tunnel ""
+            fi
+            exit 0
+            ;;
+        --add-tunnel)
+            do_add_tunnel
             exit 0
             ;;
         --add-domain)
@@ -1103,6 +1794,9 @@ SERVER_IP=""
 DNSTT_PUBKEY=""
 SSH_USER=""
 SSH_PASS=""
+SOCKS_USER=""
+SOCKS_PASS=""
+SOCKS_AUTH=false
 TUNNELS_CHANGED=false
 SSH_SETUP_DONE=false
 
@@ -1648,7 +2342,7 @@ step_start_services() {
         if dnstm tunnel start --tag "$tag" 2>/dev/null; then
             print_ok "Started: ${tag}"
         else
-            if dnstm tunnel list 2>/dev/null | grep "$tag" | grep -qi "running"; then
+            if dnstm tunnel list 2>/dev/null | awk -v t="tag=${tag}" '{for(i=1;i<=NF;i++) if($i==t){print;next}}' | grep -qi "running"; then
                 print_ok "Already running: ${tag}"
             else
                 print_warn "Could not start: ${tag}. Check: dnstm tunnel logs --tag ${tag}"
@@ -1673,6 +2367,33 @@ step_start_services() {
 
 step_verify_microsocks() {
     print_step 9 "Verify SOCKS Proxy (microsocks)"
+
+    # Ask about SOCKS authentication
+    echo ""
+    print_info "SOCKS tunnels (t2/d2) currently have no authentication."
+    print_info "Adding authentication makes the proxy secure — only clients with"
+    print_info "the correct username and password can connect."
+    echo ""
+    if prompt_yn "Enable SOCKS5 authentication for the proxy?" "y"; then
+        echo ""
+        SOCKS_USER=$(prompt_input "Enter SOCKS proxy username" "proxy")
+        if [[ -z "$SOCKS_USER" ]]; then
+            print_fail "Username cannot be empty"
+            SOCKS_USER="proxy"
+        fi
+        SOCKS_PASS=$(prompt_input "Enter SOCKS proxy password")
+        if [[ -z "$SOCKS_PASS" ]]; then
+            print_fail "Password cannot be empty — disabling SOCKS auth"
+            SOCKS_USER=""
+            SOCKS_PASS=""
+        else
+            SOCKS_AUTH=true
+            print_ok "SOCKS authentication enabled (user: ${SOCKS_USER})"
+        fi
+    else
+        print_warn "SOCKS proxy will run without authentication (open to anyone who knows the domain)"
+    fi
+    echo ""
 
     # Check if microsocks binary has GLIBC compatibility issues
     local microsocks_bin
@@ -1724,6 +2445,52 @@ step_verify_microsocks() {
         fi
     fi
 
+    # Apply SOCKS authentication if enabled
+    if [[ "$SOCKS_AUTH" == true && -n "$SOCKS_USER" && -n "$SOCKS_PASS" ]]; then
+        local svc_file="/etc/systemd/system/microsocks.service"
+        if [[ -f "$svc_file" ]]; then
+            print_info "Configuring microsocks with SOCKS5 authentication..."
+            # Read the current ExecStart line and add -u/-P flags
+            local current_exec
+            current_exec=$(grep '^ExecStart=' "$svc_file" 2>/dev/null || true)
+            if [[ -n "$current_exec" ]]; then
+                # Remove any existing -u/-P flags to avoid duplicates
+                # Use awk for safe handling of passwords with sed metacharacters
+                local clean_exec
+                clean_exec=$(echo "$current_exec" | awk '{
+                    r=""; skip=0
+                    for(i=1;i<=NF;i++){
+                        if($i=="-u"||$i=="-P"){skip=1;continue}
+                        if(skip){skip=0;continue}
+                        r=(r?r" ":"")$i
+                    }
+                    print r
+                }')
+                # Append auth flags — pass each piece via separate ENVIRON
+                # vars so shell never interprets special chars in credentials
+                _CLEAN="$clean_exec" _USER="$SOCKS_USER" _PASS="$SOCKS_PASS" awk \
+                    '/^ExecStart=/{print ENVIRON["_CLEAN"] " -u " ENVIRON["_USER"] " -P " ENVIRON["_PASS"]; next}{print}' \
+                    "$svc_file" > "${svc_file}.tmp" \
+                    && mv "${svc_file}.tmp" "$svc_file"
+                systemctl daemon-reload 2>/dev/null || true
+                systemctl restart microsocks 2>/dev/null || true
+                sleep 2
+                # Verify microsocks came back up
+                if pgrep -x microsocks &>/dev/null || systemctl is-active --quiet microsocks 2>/dev/null; then
+                    print_ok "microsocks configured with SOCKS5 authentication"
+                else
+                    print_warn "microsocks may have failed to restart — check: systemctl status microsocks"
+                fi
+            else
+                print_warn "Could not find ExecStart in microsocks.service — auth not applied"
+                SOCKS_AUTH=false
+            fi
+        else
+            print_warn "microsocks.service not found — auth not applied"
+            SOCKS_AUTH=false
+        fi
+    fi
+
     # Detect actual microsocks port (3 methods, most reliable first)
     local socks_port=""
     # Method 1: parse ss output — find the listen port on the microsocks line
@@ -1741,7 +2508,11 @@ step_verify_microsocks() {
     echo ""
     print_info "Testing SOCKS proxy on 127.0.0.1:${socks_port}..."
     local test_ip
-    test_ip=$(curl -s --max-time 10 --socks5 "127.0.0.1:${socks_port}" https://api.ipify.org 2>/dev/null || true)
+    if [[ "$SOCKS_AUTH" == true ]]; then
+        test_ip=$(curl -s --max-time 10 --socks5-basic --proxy "socks5://127.0.0.1:${socks_port}" --proxy-user "${SOCKS_USER}:${SOCKS_PASS}" https://api.ipify.org 2>/dev/null || true)
+    else
+        test_ip=$(curl -s --max-time 10 --socks5 "127.0.0.1:${socks_port}" https://api.ipify.org 2>/dev/null || true)
+    fi
 
     if [[ -n "$test_ip" ]]; then
         print_ok "SOCKS proxy works! Response: ${test_ip}"
@@ -1845,7 +2616,11 @@ step_tests() {
     fi
 
     local socks_result
-    socks_result=$(curl -s --max-time 10 --socks5 "127.0.0.1:${socks_port}" https://api.ipify.org 2>/dev/null || true)
+    if [[ "$SOCKS_AUTH" == true ]]; then
+        socks_result=$(curl -s --max-time 10 --socks5-basic --proxy "socks5://127.0.0.1:${socks_port}" --proxy-user "${SOCKS_USER}:${SOCKS_PASS}" https://api.ipify.org 2>/dev/null || true)
+    else
+        socks_result=$(curl -s --max-time 10 --socks5 "127.0.0.1:${socks_port}" https://api.ipify.org 2>/dev/null || true)
+    fi
     if [[ -n "$socks_result" ]]; then
         print_ok "SOCKS proxy: PASS (IP: ${socks_result}) on port ${socks_port}"
         pass=$((pass + 1))
@@ -2027,24 +2802,42 @@ step_summary() {
     echo -e "  ${BOLD}Share URLs — slipnet:// (for SlipNet app)${NC}"
     echo -e "  ${DIM}────────────────────────────────────────${NC}"
     local slipnet_url
+    local s_user="" s_pass=""
+    if [[ "$SOCKS_AUTH" == true ]]; then
+        s_user="$SOCKS_USER"
+        s_pass="$SOCKS_PASS"
+    fi
     # Slipstream + SOCKS
-    slipnet_url=$(generate_slipnet_url "ss" "t2" "" "" "")
+    slipnet_url=$(generate_slipnet_url "ss" "t2" "" "" "" "$s_user" "$s_pass")
     echo -e "  ${GREEN}slip1:${NC}    ${slipnet_url}"
     # DNSTT + SOCKS
     if [[ -n "$DNSTT_PUBKEY" ]]; then
-        slipnet_url=$(generate_slipnet_url "dnstt" "d2" "$DNSTT_PUBKEY" "" "")
+        slipnet_url=$(generate_slipnet_url "dnstt" "d2" "$DNSTT_PUBKEY" "" "" "$s_user" "$s_pass")
         echo -e "  ${GREEN}dnstt1:${NC}   ${slipnet_url}"
     fi
     # SSH tunnels
     if [[ "$SSH_SETUP_DONE" == true && -n "$SSH_USER" && -n "$SSH_PASS" ]]; then
-        slipnet_url=$(generate_slipnet_url "slipstream_ssh" "s2" "" "$SSH_USER" "$SSH_PASS")
+        slipnet_url=$(generate_slipnet_url "slipstream_ssh" "s2" "" "$SSH_USER" "$SSH_PASS" "$s_user" "$s_pass")
         echo -e "  ${GREEN}slip-ssh:${NC} ${slipnet_url}"
         if [[ -n "$DNSTT_PUBKEY" ]]; then
-            slipnet_url=$(generate_slipnet_url "dnstt_ssh" "ds2" "$DNSTT_PUBKEY" "$SSH_USER" "$SSH_PASS")
+            slipnet_url=$(generate_slipnet_url "dnstt_ssh" "ds2" "$DNSTT_PUBKEY" "$SSH_USER" "$SSH_PASS" "$s_user" "$s_pass")
             echo -e "  ${GREEN}dnstt-ssh:${NC} ${slipnet_url}"
         fi
     fi
     echo ""
+
+    if [[ "$SOCKS_AUTH" == true ]]; then
+        echo -e "  ${BOLD}SOCKS Proxy Authentication${NC}"
+        echo -e "  ${DIM}────────────────────────────────────────${NC}"
+        echo -e "  Username:  ${GREEN}${SOCKS_USER}${NC}"
+        echo -e "  Password:  ${GREEN}${SOCKS_PASS}${NC}"
+        echo ""
+    else
+        echo -e "  ${BOLD}SOCKS Proxy Authentication${NC}"
+        echo -e "  ${DIM}────────────────────────────────────────${NC}"
+        echo -e "  ${YELLOW}⚠ No authentication — SOCKS tunnels (t2/d2) are open${NC}"
+        echo ""
+    fi
 
     if [[ "$SSH_SETUP_DONE" == true ]]; then
         echo -e "  ${BOLD}SSH Tunnel User${NC}"
@@ -2217,6 +3010,25 @@ do_add_domain() {
     print_info "Creating 4 tunnels (set #${num}) for domain: ${BOLD}${DOMAIN}${NC}"
     echo ""
 
+    # Detect existing SOCKS authentication from microsocks service
+    local svc_file="/etc/systemd/system/microsocks.service"
+    if [[ -f "$svc_file" ]]; then
+        local existing_exec
+        existing_exec=$(grep '^ExecStart=' "$svc_file" 2>/dev/null || true)
+        local existing_socks_user existing_socks_pass
+        existing_socks_user=$(echo "$existing_exec" | sed -n 's/.*-u \([^ ]*\).*/\1/p' || true)
+        existing_socks_pass=$(echo "$existing_exec" | sed -n 's/.*-P \([^ ]*\).*/\1/p' || true)
+        if [[ -n "$existing_socks_user" && -n "$existing_socks_pass" ]]; then
+            SOCKS_AUTH=true
+            SOCKS_USER="$existing_socks_user"
+            SOCKS_PASS="$existing_socks_pass"
+            print_ok "Detected existing SOCKS authentication (user: ${SOCKS_USER})"
+        else
+            print_info "SOCKS proxy has no authentication configured"
+        fi
+    fi
+    echo ""
+
     # Ask for DNSTT MTU (use CLI value as default if provided via --mtu)
     local mtu_input
     mtu_input=$(prompt_input "DNSTT MTU size (512-1400, affects packet size)" "$DNSTT_MTU")
@@ -2309,7 +3121,7 @@ do_add_domain() {
         if dnstm tunnel start --tag "$tag" 2>/dev/null; then
             print_ok "Started: ${tag}"
         else
-            if dnstm tunnel list 2>/dev/null | grep "$tag" | grep -qi "running"; then
+            if dnstm tunnel list 2>/dev/null | awk -v t="tag=${tag}" '{for(i=1;i<=NF;i++) if($i==t){print;next}}' | grep -qi "running"; then
                 print_ok "Already running: ${tag}"
             else
                 print_warn "Could not start: ${tag}. Check: dnstm tunnel logs --tag ${tag}"
@@ -2387,10 +3199,15 @@ do_add_domain() {
     echo -e "  ${BOLD}Share URLs — slipnet:// (for SlipNet app)${NC}"
     echo -e "  ${DIM}────────────────────────────────────────${NC}"
     local slipnet_url
-    slipnet_url=$(generate_slipnet_url "ss" "t2" "" "" "")
+    local s_user="" s_pass=""
+    if [[ "$SOCKS_AUTH" == true ]]; then
+        s_user="$SOCKS_USER"
+        s_pass="$SOCKS_PASS"
+    fi
+    slipnet_url=$(generate_slipnet_url "ss" "t2" "" "" "" "$s_user" "$s_pass")
     echo -e "  ${GREEN}${slip_tag}:${NC}    ${slipnet_url}"
     if [[ -n "$DNSTT_PUBKEY" ]]; then
-        slipnet_url=$(generate_slipnet_url "dnstt" "d2" "$DNSTT_PUBKEY" "" "")
+        slipnet_url=$(generate_slipnet_url "dnstt" "d2" "$DNSTT_PUBKEY" "" "" "$s_user" "$s_pass")
         echo -e "  ${GREEN}${dnstt_tag}:${NC}   ${slipnet_url}"
     fi
     echo ""
