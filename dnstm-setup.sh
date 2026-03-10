@@ -584,6 +584,124 @@ detect_socks_auth() {
     return 1
 }
 
+# ─── Configure SOCKS Auth (manage menu) ──────────────────────────────────────
+
+do_configure_socks_auth() {
+    banner
+    print_header "Configure SOCKS5 Authentication"
+
+    if [[ $EUID -ne 0 ]]; then
+        print_fail "Not running as root."
+        exit 1
+    fi
+
+    if ! command -v dnstm &>/dev/null; then
+        print_fail "dnstm is not installed."
+        exit 1
+    fi
+
+    # Show current state
+    echo ""
+    detect_socks_auth || true
+    if [[ "$SOCKS_AUTH" == true ]]; then
+        echo -e "  ${BOLD}Current status:${NC} ${GREEN}Enabled${NC}"
+        echo -e "  ${DIM}Username: ${SOCKS_USER}${NC}"
+        echo ""
+        echo -e "  ${BOLD}1)${NC}  Change credentials"
+        echo -e "  ${BOLD}2)${NC}  Disable authentication"
+        echo -e "  ${BOLD}0)${NC}  Cancel"
+        echo ""
+        local choice=""
+        read -rp "  Select [0-2]: " choice || exit 0
+        case "$choice" in
+            1)
+                echo ""
+                ;;
+            2)
+                echo ""
+                print_info "Disabling SOCKS5 authentication..."
+                if dnstm backend auth -t socks --disable; then
+                    print_ok "SOCKS5 authentication disabled"
+                    sleep 2
+                    if pgrep -x microsocks &>/dev/null || systemctl is-active --quiet microsocks 2>/dev/null; then
+                        print_ok "microsocks restarted without authentication"
+                    else
+                        print_warn "microsocks may not have restarted — check: systemctl status microsocks"
+                    fi
+                else
+                    print_fail "Failed to disable authentication"
+                fi
+                exit 0
+                ;;
+            *)
+                exit 0
+                ;;
+        esac
+    else
+        echo -e "  ${BOLD}Current status:${NC} ${RED}Disabled (open proxy)${NC}"
+        echo ""
+        if ! prompt_yn "Enable SOCKS5 authentication?" "y"; then
+            print_info "Cancelled."
+            exit 0
+        fi
+        echo ""
+    fi
+
+    # Collect credentials
+    local new_user new_pass
+    new_user=$(prompt_input "Enter SOCKS proxy username" "proxy")
+    new_user=$(echo "$new_user" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    if [[ -z "$new_user" ]]; then
+        print_fail "Username cannot be empty"
+        exit 1
+    fi
+    if [[ "$new_user" == *"|"* || "$new_user" == *":"* ]]; then
+        print_fail "Username cannot contain | or : characters"
+        exit 1
+    fi
+
+    new_pass=$(prompt_input "Enter SOCKS proxy password")
+    new_pass=$(echo "$new_pass" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    if [[ -z "$new_pass" ]]; then
+        print_fail "Password cannot be empty"
+        exit 1
+    fi
+    if [[ "$new_pass" == *"|"* ]]; then
+        print_fail "Password cannot contain the | character"
+        exit 1
+    fi
+
+    echo ""
+    print_info "Applying SOCKS5 authentication..."
+    if dnstm backend auth -t socks -u "$new_user" -p "$new_pass"; then
+        print_ok "SOCKS5 authentication enabled (user: ${new_user})"
+        sleep 2
+        if pgrep -x microsocks &>/dev/null || systemctl is-active --quiet microsocks 2>/dev/null; then
+            print_ok "microsocks restarted with authentication"
+        else
+            print_warn "microsocks may not have restarted — check: systemctl status microsocks"
+        fi
+
+        # Verify auth enforcement
+        local socks_port=""
+        socks_port=$(ss -tlnp 2>/dev/null | grep microsocks | awk '{for(i=1;i<=NF;i++) if($i ~ /:[0-9]+$/) {split($i,a,":"); print a[length(a)]; exit}}' || true)
+        if [[ -z "$socks_port" ]]; then
+            socks_port="19801"
+        fi
+        local noauth_test
+        noauth_test=$(curl -s --max-time 5 --socks5 "127.0.0.1:${socks_port}" https://api.ipify.org 2>/dev/null || true)
+        if [[ -z "$noauth_test" ]]; then
+            print_ok "Auth enforced: unauthenticated connections are rejected"
+        else
+            print_warn "Auth NOT enforced: proxy still works without credentials!"
+            print_info "Try restarting: systemctl restart microsocks"
+        fi
+    else
+        print_fail "Failed to configure SOCKS5 authentication"
+        print_info "Try manually: dnstm backend auth -t socks -u ${new_user} -p <password>"
+    fi
+}
+
 # ─── --status ───────────────────────────────────────────────────────────────────
 
 do_status() {
@@ -1709,16 +1827,17 @@ do_manage() {
         echo -e "  ${BOLD}3)${NC}  Remove tunnel         ${DIM}(pick one to remove)${NC}"
         echo -e "  ${BOLD}4)${NC}  Add backup domain     ${DIM}(new domain → 4 more tunnels)${NC}"
         echo -e "  ${BOLD}5)${NC}  Manage SSH users      ${DIM}(add, list, update, delete)${NC}"
-        echo -e "  ${BOLD}6)${NC}  Apply hardening       ${DIM}(systemd security for all services)${NC}"
+        echo -e "  ${BOLD}6)${NC}  Configure SOCKS auth  ${DIM}(enable, disable, or change credentials)${NC}"
+        echo -e "  ${BOLD}7)${NC}  Apply hardening       ${DIM}(systemd security for all services)${NC}"
         echo ""
         echo -e "  ${DIM}──────────────────────────────────────────────${NC}"
-        echo -e "  ${BOLD}${RED}7)${NC}  ${RED}Uninstall everything${NC}"
+        echo -e "  ${BOLD}${RED}8)${NC}  ${RED}Uninstall everything${NC}"
         echo ""
         echo -e "  ${BOLD}0)${NC}  Exit"
         echo ""
 
         local choice=""
-        read -rp "  Select [0-7]: " choice || break
+        read -rp "  Select [0-8]: " choice || break
 
         case "$choice" in
             1)
@@ -1737,9 +1856,12 @@ do_manage() {
                 ( trap - INT; do_manage_users ) || true
                 ;;
             6)
-                ( trap - INT; do_harden ) || true
+                ( trap - INT; do_configure_socks_auth ) || true
                 ;;
             7)
+                ( trap - INT; do_harden ) || true
+                ;;
+            8)
                 ( trap - INT; do_uninstall ) || true
                 # If uninstall succeeded, dnstm is gone — exit menu
                 hash -d dnstm 2>/dev/null || true
@@ -1758,7 +1880,7 @@ do_manage() {
                 continue
                 ;;
             *)
-                print_warn "Invalid choice. Enter 0-7."
+                print_warn "Invalid choice. Enter 0-8."
                 sleep 1
                 continue
                 ;;
@@ -2503,8 +2625,16 @@ step_verify_microsocks() {
     # Apply SOCKS authentication via dnstm (v0.6.8+) — only if microsocks is running
     if [[ "$microsocks_running" == true && "$SOCKS_AUTH" == true && -n "$SOCKS_USER" && -n "$SOCKS_PASS" ]]; then
         print_info "Configuring SOCKS5 authentication via dnstm..."
-        if dnstm backend auth -t socks -u "$SOCKS_USER" -p "$SOCKS_PASS" 2>/dev/null; then
+        if dnstm backend auth -t socks -u "$SOCKS_USER" -p "$SOCKS_PASS"; then
             print_ok "SOCKS5 authentication enabled (user: ${SOCKS_USER})"
+            # dnstm backend auth rewrites ExecStart and restarts microsocks;
+            # give it a moment to come back up
+            sleep 2
+            if pgrep -x microsocks &>/dev/null || systemctl is-active --quiet microsocks 2>/dev/null; then
+                print_ok "microsocks restarted with authentication"
+            else
+                print_warn "microsocks may not have restarted — check: systemctl status microsocks"
+            fi
         else
             print_warn "Failed to configure SOCKS5 authentication via dnstm"
             print_info "Try manually: dnstm backend auth -t socks -u ${SOCKS_USER} -p <password>"
@@ -2545,6 +2675,18 @@ step_verify_microsocks() {
     else
         print_warn "SOCKS proxy test failed (this may be OK if internet is restricted)"
         print_info "The proxy may still work for DNS tunnel clients"
+    fi
+
+    # Negative test: verify unauthenticated access is rejected when auth is enabled
+    if [[ "$SOCKS_AUTH" == true && -n "$test_ip" ]]; then
+        local noauth_ip
+        noauth_ip=$(curl -s --max-time 5 --socks5 "127.0.0.1:${socks_port}" https://api.ipify.org 2>/dev/null || true)
+        if [[ -z "$noauth_ip" ]]; then
+            print_ok "Auth enforced: unauthenticated connections are rejected"
+        else
+            print_warn "Auth NOT enforced: proxy works without credentials!"
+            print_info "Try: dnstm backend auth -t socks -u ${SOCKS_USER} -p <password>"
+        fi
     fi
 }
 
@@ -2662,6 +2804,18 @@ step_tests() {
     if [[ -n "$socks_result" ]]; then
         print_ok "SOCKS proxy: PASS (IP: ${socks_result}) on port ${socks_port}"
         pass=$((pass + 1))
+        # Verify auth enforcement
+        if [[ "$SOCKS_AUTH" == true ]]; then
+            local noauth_result
+            noauth_result=$(curl -s --max-time 5 --socks5 "127.0.0.1:${socks_port}" https://api.ipify.org 2>/dev/null || true)
+            if [[ -z "$noauth_result" ]]; then
+                print_ok "SOCKS auth enforcement: PASS (unauthenticated rejected)"
+                pass=$((pass + 1))
+            else
+                print_fail "SOCKS auth enforcement: FAIL (works without credentials!)"
+                fail=$((fail + 1))
+            fi
+        fi
     elif ss -tlnp 2>/dev/null | grep -q "microsocks"; then
         print_warn "SOCKS proxy: LISTENING on port ${socks_port} but connectivity test failed"
         print_info "microsocks is running but outbound may be blocked or tunnels not ready"
