@@ -10,7 +10,7 @@
 
 set -euo pipefail
 
-VERSION="1.1"
+VERSION="1.2"
 TOTAL_STEPS=12
 
 # ─── Colors & Formatting ───────────────────────────────────────────────────────
@@ -1774,6 +1774,18 @@ do_manage() {
     trap - INT
 }
 
+# ─── Global Variables (must be set before arg parser since --status/--manage use them) ───
+
+DOMAIN=""
+SERVER_IP=""
+DNSTT_PUBKEY=""
+SSH_USER=""
+SSH_PASS=""
+SOCKS_USER=""
+SOCKS_PASS=""
+SOCKS_AUTH=false
+TUNNELS_CHANGED=false
+
 # ─── Parse Arguments ────────────────────────────────────────────────────────────
 
 ADD_DOMAIN_MODE=false
@@ -1858,15 +1870,6 @@ fi
 
 # ─── Variables (populated during setup) ─────────────────────────────────────────
 
-DOMAIN=""
-SERVER_IP=""
-DNSTT_PUBKEY=""
-SSH_USER=""
-SSH_PASS=""
-SOCKS_USER=""
-SOCKS_PASS=""
-SOCKS_AUTH=false
-TUNNELS_CHANGED=false
 SSH_SETUP_DONE=false
 
 # ─── STEP 1: Pre-flight Checks ─────────────────────────────────────────────────
