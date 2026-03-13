@@ -42,7 +42,7 @@ DNS (Domain Name System) is the internet's phone book — every device on the pl
 **How it works:**
 
 1. 📱 Your phone (running SlipNet) encodes internet traffic as DNS queries
-2. 🔒 These queries look like normal DNS lookups (e.g., `abc123.t2.yourdomain.com`)
+2. 🔒 These queries look like normal DNS lookups (e.g., `abc123.t.yourdomain.com`)
 3. 🌍 The queries travel through public DNS resolvers (Google `8.8.8.8`, Cloudflare `1.1.1.1`, etc.)
 4. 🖥️ Your server receives the queries, decodes the hidden data, and forwards it to the real internet
 5. ↩️ Responses travel back the same way, encoded inside DNS responses
@@ -67,26 +67,26 @@ Because the traffic looks like ordinary DNS resolution, it passes through filter
      v
   🔀 DNS Router (multiplexes port 53)
      |
-     +---> t2.domain ---> Slipstream ---> microsocks (SOCKS5) ---> 🌐 Internet
+     +---> t.domain ---> Slipstream ---> microsocks (SOCKS5) ---> 🌐 Internet
      |                    (QUIC + TLS)
      |
-     +---> d2.domain ---> DNSTT --------> microsocks (SOCKS5) ---> 🌐 Internet
+     +---> d.domain ---> DNSTT --------> microsocks (SOCKS5) ---> 🌐 Internet
      |                    (Noise + Curve25519)
      |
-     +---> s2.domain ---> Slipstream ---> SSH Tunnel ------------> 🌐 Internet
+     +---> s.domain ---> Slipstream ---> SSH Tunnel ------------> 🌐 Internet
      |                    (QUIC + TLS)   (port forwarding)
      |
-     +---> ds2.domain --> DNSTT --------> SSH Tunnel ------------> 🌐 Internet
+     +---> ds.domain --> DNSTT --------> SSH Tunnel ------------> 🌐 Internet
                           (Noise + Curve25519) (port forwarding)
 ```
 
 ### 🔗 How DNS Delegation Works
 
-When someone queries `t2.yourdomain.com`, the global DNS system follows this chain:
+When someone queries `t.yourdomain.com`, the global DNS system follows this chain:
 
-1. Client asks its resolver: *"What is xyz.t2.yourdomain.com?"*
-2. Resolver asks Cloudflare (your domain's nameserver): *"What is t2.yourdomain.com?"*
-3. Cloudflare sees the NS record: *"For t2.yourdomain.com, ask ns.yourdomain.com"*
+1. Client asks its resolver: *"What is xyz.t.yourdomain.com?"*
+2. Resolver asks Cloudflare (your domain's nameserver): *"What is t.yourdomain.com?"*
+3. Cloudflare sees the NS record: *"For t.yourdomain.com, ask ns.yourdomain.com"*
 4. Cloudflare sees the A record: *"ns.yourdomain.com is at `<your server IP>`"*
 5. Resolver sends the query directly to your server on port 53
 6. Your server's DNS Router receives it and routes to the correct tunnel
@@ -110,10 +110,10 @@ When someone queries `t2.yourdomain.com`, the global DNS system follows this cha
 
 | Tunnel | Subdomain | Transport | Backend | Use Case |
 |---|---|---|---|---|
-| ⚡ **slip1** | `t2.domain` | Slipstream (QUIC) | SOCKS | Fastest — recommended for most users |
-| 🔐 **dnstt1** | `d2.domain` | DNSTT (Noise) | SOCKS | Fallback if Slipstream is blocked |
-| 🔑 **slip-ssh** | `s2.domain` | Slipstream (QUIC) | SSH | When you need per-user authentication |
-| 🔑 **dnstt-ssh** | `ds2.domain` | DNSTT (Noise) | SSH | SSH fallback if Slipstream is blocked |
+| ⚡ **slip1** | `t.domain` | Slipstream (QUIC) | SOCKS | Fastest — recommended for most users |
+| 🔐 **dnstt1** | `d.domain` | DNSTT (Noise) | SOCKS | Fallback if Slipstream is blocked |
+| 🔑 **slip-ssh** | `s.domain` | Slipstream (QUIC) | SSH | When you need per-user authentication |
+| 🔑 **dnstt-ssh** | `ds.domain` | DNSTT (Noise) | SSH | SSH fallback if Slipstream is blocked |
 
 > 🧦 **SOCKS backend:** Optionally secured with SOCKS5 username/password authentication. Without auth, anyone who knows the domain can connect.
 >
@@ -228,10 +228,10 @@ The wizard has **12 steps**. Here's what each one does:
 
 - Asks for DNSTT MTU size (default 1232, range 512–1400) — useful for networks with packet size restrictions
 - Creates 4 tunnels using `dnstm tunnel add`:
-  - `slip1` — Slipstream + SOCKS on `t2.yourdomain.com`
-  - `dnstt1` — DNSTT + SOCKS on `d2.yourdomain.com` (with configurable MTU)
-  - `slip-ssh` — Slipstream + SSH on `s2.yourdomain.com`
-  - `dnstt-ssh` — DNSTT + SSH on `ds2.yourdomain.com` (with configurable MTU)
+  - `slip1` — Slipstream + SOCKS on `t.yourdomain.com`
+  - `dnstt1` — DNSTT + SOCKS on `d.yourdomain.com` (with configurable MTU)
+  - `slip-ssh` — Slipstream + SSH on `s.yourdomain.com`
+  - `dnstt-ssh` — DNSTT + SSH on `ds.yourdomain.com` (with configurable MTU)
 - Extracts and displays the DNSTT public key (needed for client config)
 - Handles "already exists" gracefully on re-runs
 </details>
@@ -260,7 +260,7 @@ The wizard has **12 steps**. Here's what each one does:
 <details>
 <summary><b>Step 10 — 👤 SSH Tunnel User</b></summary>
 
-- **Required for SSH tunnels (s2/ds2) to work** — skipping means SSH tunnels won't function
+- **Required for SSH tunnels (s/ds) to work** — skipping means SSH tunnels won't function
 - Downloads `sshtun-user` tool if not installed
 - Configures SSH with security restrictions
 - Creates a restricted user that can only do SSH port forwarding
@@ -317,12 +317,12 @@ Create these records in your **Cloudflare** dashboard:
 
 | Type | Name | Target |
 |---|---|---|
-| `NS` | `t2` | `ns.yourdomain.com` |
-| `NS` | `d2` | `ns.yourdomain.com` |
-| `NS` | `s2` | `ns.yourdomain.com` |
-| `NS` | `ds2` | `ns.yourdomain.com` |
+| `NS` | `t` | `ns.yourdomain.com` |
+| `NS` | `d` | `ns.yourdomain.com` |
+| `NS` | `s` | `ns.yourdomain.com` |
+| `NS` | `ds` | `ns.yourdomain.com` |
 
-> ☝️ These tell the internet: *"For queries about t2/d2/s2/ds2.yourdomain.com, ask ns.yourdomain.com (your server)."*
+> ☝️ These tell the internet: *"For queries about t/d/s/ds.yourdomain.com, ask ns.yourdomain.com (your server)."*
 
 ### ⚠️ Common Mistakes
 
@@ -412,29 +412,29 @@ Each topic gives deep explanations of how things work, why each step is needed, 
 
 | Setting | Value |
 |---|---|
-| 🌐 **Domain** | Your tunnel subdomain (e.g. `t2.yourdomain.com`) |
+| 🌐 **Domain** | Your tunnel subdomain (e.g. `t.yourdomain.com`) |
 | 🔍 **DNS Resolver** | Any public resolver (see below) |
-| 🔄 **Transport** | Slipstream (for t2/s2) or DNSTT (for d2) |
-| 🔑 **DNSTT Public Key** | The key shown in Step 7 (only for d2 tunnel) |
+| 🔄 **Transport** | Slipstream (for t/s) or DNSTT (for d) |
+| 🔑 **DNSTT Public Key** | The key shown in Step 7 (only for d tunnel) |
 
 ### 🍎 iOS — HTTP Injector
 
-**HTTP Injector** supports DNSTT tunnels (the `d2` subdomain). Slipstream is not supported on iOS.
+**HTTP Injector** supports DNSTT tunnels (the `d` subdomain). Slipstream is not supported on iOS.
 
 📥 **Download:** [App Store](https://apps.apple.com/us/app/http-injector/id1659992827)
 
 | Setting | Value |
 |---|---|
 | 🔄 **Protocol** | DNS Tunnel (DNSTT) |
-| 🌐 **Domain** | `d2.yourdomain.com` |
+| 🌐 **Domain** | `d.yourdomain.com` |
 | 🔍 **DNS Resolver** | Any public resolver (see below) |
 | 🔑 **DNSTT Public Key** | The key shown in Step 7 |
 
-> ⚠️ iOS users can only use the **DNSTT tunnel** (`d2` subdomain). Slipstream tunnels (`t2`/`s2`) are Android-only via SlipNet.
+> ⚠️ iOS users can only use the **DNSTT tunnel** (`d` subdomain). Slipstream tunnels (`t`/`s`) are Android-only via SlipNet.
 
 ### 📊 Platform Support
 
-| Platform | App | Slipstream (t2/s2) | DNSTT (d2) |
+| Platform | App | Slipstream (t/s) | DNSTT (d) |
 |---|---|---|---|
 | 🤖 Android | SlipNet | ✅ | ✅ |
 | 🍎 iOS | HTTP Injector | ❌ | ✅ |
@@ -543,7 +543,7 @@ This opens an interactive menu:
 | **4** | **Delete user** — remove a user (with confirmation) |
 | **0** | **Exit** |
 
-> **What are SSH tunnel users?** These are restricted system users that can only create SSH tunnels (SOCKS proxy, port forwarding) — they have no shell access and cannot run commands on your server. They're required for the SSH-based tunnels (`s2` and `ds2` subdomains).
+> **What are SSH tunnel users?** These are restricted system users that can only create SSH tunnels (SOCKS proxy, port forwarding) — they have no shell access and cannot run commands on your server. They're required for the SSH-based tunnels (`s` and `ds` subdomains).
 
 If `sshtun-user` is not installed, the script will automatically download and configure it on first run.
 
@@ -551,7 +551,7 @@ If `sshtun-user` is not installed, the script will automatically download and co
 
 ## 🔐 SOCKS Proxy Authentication
 
-During setup (Step 9), the wizard asks whether to enable SOCKS5 authentication on the microsocks proxy. This controls access to the **SOCKS tunnels** (`t2` and `d2` subdomains).
+During setup (Step 9), the wizard asks whether to enable SOCKS5 authentication on the microsocks proxy. This controls access to the **SOCKS tunnels** (`t` and `d` subdomains).
 
 ### With Authentication (Recommended)
 
@@ -679,14 +679,14 @@ curl --socks5 127.0.0.1:<MICROSOCKS_PORT> https://api.ipify.org
 - Make sure the A record proxy is **OFF** (grey cloud ⚪, not orange 🟠)
 - NS record values must be `ns.yourdomain.com` (not an IP address)
 - Wait 5–10 minutes for DNS propagation after creating records
-- Test with: `dig NS t2.yourdomain.com` — should show `ns.yourdomain.com`
+- Test with: `dig NS t.yourdomain.com` — should show `ns.yourdomain.com`
 </details>
 
 <details>
 <summary><b>🔴 SlipNet can't connect</b></summary>
 
 - Try different DNS resolvers (`8.8.8.8`, `1.1.1.1`, `9.9.9.9`)
-- Make sure you selected the correct transport (Slipstream for t2/s2, DNSTT for d2)
+- Make sure you selected the correct transport (Slipstream for t/s, DNSTT for d)
 - For DNSTT, verify the public key matches the one shown during setup
 - Check that port 53 UDP and TCP are open in your hosting provider's firewall panel
 </details>
@@ -781,10 +781,10 @@ Made By **SamNet Technologies** — Saman
      v
   🔀 DNS Router (مالتی‌پلکسر)
      |
-     +---> t2.domain  ---> Slipstream ---> microsocks (SOCKS5) ---> 🌐 اینترنت
-     +---> d2.domain  ---> DNSTT --------> microsocks (SOCKS5) ---> 🌐 اینترنت
-     +---> s2.domain  ---> Slip+SSH -----> تانل SSH --------------> 🌐 اینترنت
-     +---> ds2.domain --> DNSTT+SSH ----> تانل SSH --------------> 🌐 اینترنت
+     +---> t.domain  ---> Slipstream ---> microsocks (SOCKS5) ---> 🌐 اینترنت
+     +---> d.domain  ---> DNSTT --------> microsocks (SOCKS5) ---> 🌐 اینترنت
+     +---> s.domain  ---> Slip+SSH -----> تانل SSH --------------> 🌐 اینترنت
+     +---> ds.domain --> DNSTT+SSH ----> تانل SSH --------------> 🌐 اینترنت
 ```
 
 <div dir="rtl">
@@ -870,10 +870,10 @@ sudo bash dnstm-setup.sh --users
 
 | Type | Name | Target |
 |---|---|---|
-| `NS` | `t2` | `ns.yourdomain.com` |
-| `NS` | `d2` | `ns.yourdomain.com` |
-| `NS` | `s2` | `ns.yourdomain.com` |
-| `NS` | `ds2` | `ns.yourdomain.com` |
+| `NS` | `t` | `ns.yourdomain.com` |
+| `NS` | `d` | `ns.yourdomain.com` |
+| `NS` | `s` | `ns.yourdomain.com` |
+| `NS` | `ds` | `ns.yourdomain.com` |
 
 ### ⚠️ اشتباهات رایج
 
@@ -909,10 +909,10 @@ sudo bash dnstm-setup.sh --users
 
 | تانل | ساب‌دامین | پروتکل | سرعت | توضیح |
 |---|---|---|---|---|
-| ⚡ **Slipstream + SOCKS** | `t2` | QUIC + TLS | ~63 KB/s | سریع‌ترین — پیشنهادی برای اکثر کاربران |
-| 🔐 **DNSTT + SOCKS** | `d2` | Noise + Curve25519 | ~42 KB/s | جایگزین اگر Slipstream مسدود شود |
-| 🔑 **Slipstream + SSH** | `s2` | QUIC + TLS + SSH | ~60 KB/s | نیاز به نام کاربری و رمز عبور |
-| 🔑 **DNSTT + SSH** | `ds2` | Noise + Curve25519 + SSH | ~40 KB/s | جایگزین SSH اگر Slipstream مسدود شود |
+| ⚡ **Slipstream + SOCKS** | `t` | QUIC + TLS | ~63 KB/s | سریع‌ترین — پیشنهادی برای اکثر کاربران |
+| 🔐 **DNSTT + SOCKS** | `d` | Noise + Curve25519 | ~42 KB/s | جایگزین اگر Slipstream مسدود شود |
+| 🔑 **Slipstream + SSH** | `s` | QUIC + TLS + SSH | ~60 KB/s | نیاز به نام کاربری و رمز عبور |
+| 🔑 **DNSTT + SSH** | `ds` | Noise + Curve25519 + SSH | ~40 KB/s | جایگزین SSH اگر Slipstream مسدود شود |
 
 > 🧦 **بک‌اند SOCKS:** امکان فعال‌سازی احراز هویت SOCKS5 با نام کاربری و رمز عبور. بدون احراز هویت، هر کسی که دامنه را بداند می‌تواند وصل شود.
 >
@@ -930,29 +930,29 @@ sudo bash dnstm-setup.sh --users
 
 | تنظیم | مقدار |
 |---|---|
-| 🌐 **Domain** | ساب‌دامین تانل (مثلاً `t2.yourdomain.com`) |
+| 🌐 **Domain** | ساب‌دامین تانل (مثلاً `t.yourdomain.com`) |
 | 🔍 **DNS Resolver** | یکی از resolverهای عمومی (جدول زیر) |
-| 🔄 **Transport** | Slipstream (برای t2/s2) یا DNSTT (برای d2) |
-| 🔑 **DNSTT Public Key** | کلید نمایش داده شده در مرحله ۷ (فقط برای تانل d2) |
+| 🔄 **Transport** | Slipstream (برای t/s) یا DNSTT (برای d) |
+| 🔑 **DNSTT Public Key** | کلید نمایش داده شده در مرحله ۷ (فقط برای تانل d) |
 
 ### 🍎 iOS — HTTP Injector
 
-**HTTP Injector** فقط از تانل DNSTT (ساب‌دامین `d2`) پشتیبانی می‌کند. Slipstream روی iOS پشتیبانی نمی‌شود.
+**HTTP Injector** فقط از تانل DNSTT (ساب‌دامین `d`) پشتیبانی می‌کند. Slipstream روی iOS پشتیبانی نمی‌شود.
 
 📥 **دانلود:** [App Store](https://apps.apple.com/us/app/http-injector/id1659992827)
 
 | تنظیم | مقدار |
 |---|---|
 | 🔄 **Protocol** | DNS Tunnel (DNSTT) |
-| 🌐 **Domain** | `d2.yourdomain.com` |
+| 🌐 **Domain** | `d.yourdomain.com` |
 | 🔍 **DNS Resolver** | یکی از resolverهای عمومی (جدول زیر) |
 | 🔑 **DNSTT Public Key** | کلید نمایش داده شده در مرحله ۷ |
 
-> ⚠️ کاربران iOS فقط می‌توانند از **تانل DNSTT** (ساب‌دامین `d2`) استفاده کنند. تانل‌های Slipstream (`t2`/`s2`) فقط روی اندروید با SlipNet کار می‌کنند.
+> ⚠️ کاربران iOS فقط می‌توانند از **تانل DNSTT** (ساب‌دامین `d`) استفاده کنند. تانل‌های Slipstream (`t`/`s`) فقط روی اندروید با SlipNet کار می‌کنند.
 
 ### 📊 پشتیبانی پلتفرم‌ها
 
-| پلتفرم | اپلیکیشن | Slipstream (t2/s2) | DNSTT (d2) |
+| پلتفرم | اپلیکیشن | Slipstream (t/s) | DNSTT (d) |
 |---|---|---|---|
 | 🤖 اندروید | SlipNet | ✅ | ✅ |
 | 🍎 iOS | HTTP Injector | ❌ | ✅ |
@@ -1068,7 +1068,7 @@ sudo bash dnstm-setup.sh --users
 | **4** | **حذف کاربر** — حذف کاربر (با تأیید) |
 | **0** | **خروج** |
 
-> **کاربران تانل SSH چی هستن؟** کاربران محدود سیستمی هستن که فقط می‌تونن تانل SSH بزنن (پروکسی SOCKS، فوروارد پورت) — دسترسی shell ندارن و نمی‌تونن روی سرور شما دستوری اجرا کنن. برای تانل‌های SSH (ساب‌دامین‌های `s2` و `ds2`) لازمن.
+> **کاربران تانل SSH چی هستن؟** کاربران محدود سیستمی هستن که فقط می‌تونن تانل SSH بزنن (پروکسی SOCKS، فوروارد پورت) — دسترسی shell ندارن و نمی‌تونن روی سرور شما دستوری اجرا کنن. برای تانل‌های SSH (ساب‌دامین‌های `s` و `ds`) لازمن.
 
 اگر `sshtun-user` نصب نباشد، اسکریپت خودکار آن را دانلود و تنظیم می‌کند.
 
@@ -1106,7 +1106,7 @@ dnstm router logs
 
 ### 🔴 SlipNet وصل نمی‌شود
 - DNS resolverهای مختلف را امتحان کنید
-- مطمئن شوید Transport صحیح انتخاب شده (Slipstream برای t2/s2، DNSTT برای d2)
+- مطمئن شوید Transport صحیح انتخاب شده (Slipstream برای t/s، DNSTT برای d)
 - برای DNSTT، کلید عمومی را بررسی کنید
 - پورت 53 (UDP و TCP) باید در فایروال هاستینگ باز باشد
 

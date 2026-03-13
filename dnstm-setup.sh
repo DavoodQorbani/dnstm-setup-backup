@@ -196,9 +196,9 @@ help_topic_domain() {
     echo "  domain you own, you can't receive these queries."
     echo ""
     echo -e "  ${BOLD}How DNS delegation works${NC}"
-    echo "  When you create NS records pointing t2.example.com to"
+    echo "  When you create NS records pointing t.example.com to"
     echo "  ns.example.com (your server), you tell the global DNS"
-    echo "  system: 'For any query about t2.example.com, ask my"
+    echo "  system: 'For any query about t.example.com, ask my"
     echo "  server directly.' This is how tunnel traffic finds you."
     echo ""
     echo -e "  ${BOLD}Where to buy a domain${NC}"
@@ -209,10 +209,10 @@ help_topic_domain() {
     echo ""
     echo -e "  ${BOLD}Subdomains used by this script${NC}"
     echo "  If your domain is example.com:"
-    echo "    t2.example.com  ->  Slipstream + SOCKS tunnel"
-    echo "    d2.example.com  ->  DNSTT + SOCKS tunnel"
-    echo "    s2.example.com  ->  Slipstream + SSH tunnel"
-    echo "    ds2.example.com ->  DNSTT + SSH tunnel"
+    echo "    t.example.com   ->  Slipstream + SOCKS tunnel"
+    echo "    d.example.com   ->  DNSTT + SOCKS tunnel"
+    echo "    s.example.com   ->  Slipstream + SSH tunnel"
+    echo "    ds.example.com  ->  DNSTT + SSH tunnel"
     help_press_enter
 }
 
@@ -229,8 +229,8 @@ help_topic_dns_records() {
     echo ""
     echo -e "  ${BOLD}NS Record (Name Server Record)${NC}"
     echo "  Delegates a subdomain to another DNS server."
-    echo "  We create:  t2.yourdomain.com NS -> ns.yourdomain.com"
-    echo "  This tells the internet: 'For queries about t2, ask"
+    echo "  We create:  t.yourdomain.com NS -> ns.yourdomain.com"
+    echo "  This tells the internet: 'For queries about t, ask"
     echo "  the server at ns.yourdomain.com (your VPS).'"
     echo ""
     echo -e "  ${BOLD}Why 'DNS Only' (grey cloud)?${NC}"
@@ -242,10 +242,10 @@ help_topic_dns_records() {
     echo -e "  ${BOLD}Why 4 subdomains?${NC}"
     echo "  Each tunnel type needs its own subdomain so the DNS"
     echo "  Router can route them to the right tunnel:"
-    echo "    t2  -> Slipstream + SOCKS  (fastest, QUIC-based)"
-    echo "    d2  -> DNSTT + SOCKS       (classic, Noise protocol)"
-    echo "    s2  -> Slipstream + SSH    (SSH over DNS)"
-    echo "    ds2 -> DNSTT + SSH         (SSH over DNSTT)"
+    echo "    t   -> Slipstream + SOCKS  (fastest, QUIC-based)"
+    echo "    d   -> DNSTT + SOCKS       (classic, Noise protocol)"
+    echo "    s   -> Slipstream + SSH    (SSH over DNS)"
+    echo "    ds  -> DNSTT + SSH         (SSH over DNSTT)"
     echo ""
     echo -e "  ${BOLD}Common mistakes${NC}"
     echo "  - Using 'tns' instead of 'ns' for the A record name"
@@ -304,8 +304,8 @@ help_topic_dnstm() {
     echo ""
     echo -e "  ${BOLD}How the DNS Router works${NC}"
     echo "  All DNS queries arrive at port 53. The router inspects"
-    echo "  the domain name: if it's for t2.example.com, it sends"
-    echo "  the query to Slipstream. If it's for d2.example.com,"
+    echo "  the domain name: if it's for t.example.com, it sends"
+    echo "  the query to Slipstream. If it's for d.example.com,"
     echo "  it routes to DNSTT. Each tunnel decodes the data and"
     echo "  forwards it through microsocks to the internet."
     help_press_enter
@@ -329,10 +329,10 @@ help_topic_ssh() {
     echo "   -> SSH port forwarding (-D) -> Internet"
     echo ""
     echo -e "  ${BOLD}SSH vs SOCKS backend${NC}"
-    echo "  SOCKS (t2/d2 tunnels):"
+    echo "  SOCKS (t/d tunnels):"
     echo "    - Faster, no authentication needed"
     echo "    - Anyone who knows the domain can connect"
-    echo "  SSH (s2/ds2 tunnels):"
+    echo "  SSH (s/ds tunnels):"
     echo "    - Requires username + password to connect"
     echo "    - Only authorized users can use it"
     echo "    - Slightly slower (SSH encryption overhead)"
@@ -366,10 +366,10 @@ help_topic_architecture() {
     echo "    Your Server, Port 53"
     echo "      |"
     echo "      v"
-    echo "    DNS Router --+--> t2  --> Slipstream --+--> microsocks"
-    echo "                 +--> d2  --> DNSTT -------+    (SOCKS5)"
-    echo "                 +--> s2  --> Slip+SSH ----+       |"
-    echo "                 +--> ds2 --> DNSTT+SSH ---+       v"
+    echo "    DNS Router --+--> t   --> Slipstream --+--> microsocks"
+    echo "                 +--> d   --> DNSTT -------+    (SOCKS5)"
+    echo "                 +--> s   --> Slip+SSH ----+       |"
+    echo "                 +--> ds  --> DNSTT+SSH ---+       v"
     echo "                                              Internet"
     echo ""
     echo -e "  ${BOLD}Protocols${NC}"
@@ -899,7 +899,7 @@ do_status() {
 # Generate a slipnet:// deep-link URL for the SlipNet Android app.
 # Usage: generate_slipnet_url <tunnel_type> <subdomain> [pubkey] [ssh_user] [ssh_pass] [socks_user] [socks_pass]
 #   tunnel_type: "ss", "dnstt", "slipstream_ssh", or "dnstt_ssh" (SlipNet constants)
-#   subdomain:   e.g. "t2" or "d2"
+#   subdomain:   e.g. "t" or "d"
 #   pubkey:      DNSTT public key (required for dnstt, empty for slipstream)
 #   ssh_user:    SSH tunnel username (optional)
 #   ssh_pass:    SSH tunnel password (optional)
@@ -1353,10 +1353,10 @@ do_add_tunnel() {
 
     # 3. Get domain
     local domain
-    domain=$(prompt_input "Enter the full tunnel domain (e.g. t2.example.com)")
+    domain=$(prompt_input "Enter the full tunnel domain (e.g. t.example.com)")
     domain=$(echo "$domain" | sed 's|^[[:space:]]*||;s|[[:space:]]*$||;s|^https\?://||;s|/.*$||')
     if [[ -z "$domain" || ! "$domain" == *.*.* ]]; then
-        print_fail "Invalid domain. Must be a subdomain (e.g. t2.example.com, not example.com)"
+        print_fail "Invalid domain. Must be a subdomain (e.g. t.example.com, not example.com)"
         exit 1
     fi
     print_ok "Domain: ${domain}"
@@ -2013,20 +2013,20 @@ step_dns_records() {
         "Record 1:  Type: A   | Name: ns | Value: ${SERVER_IP}" \
         "           Proxy: OFF (DNS Only - grey cloud)" \
         "" \
-        "Record 2:  Type: NS  | Name: t2  | Value: ns.${DOMAIN}" \
-        "Record 3:  Type: NS  | Name: d2  | Value: ns.${DOMAIN}" \
-        "Record 4:  Type: NS  | Name: s2  | Value: ns.${DOMAIN}" \
-        "Record 5:  Type: NS  | Name: ds2 | Value: ns.${DOMAIN}"
+        "Record 2:  Type: NS  | Name: t   | Value: ns.${DOMAIN}" \
+        "Record 3:  Type: NS  | Name: d   | Value: ns.${DOMAIN}" \
+        "Record 4:  Type: NS  | Name: s   | Value: ns.${DOMAIN}" \
+        "Record 5:  Type: NS  | Name: ds  | Value: ns.${DOMAIN}"
 
     echo ""
     print_warn "IMPORTANT: The A record MUST be DNS Only (grey cloud, NOT orange)"
     print_warn "IMPORTANT: The A record name must be \"ns\" (not \"tns\")"
     echo ""
     echo "  Subdomain purposes:"
-    echo "    t2  = Slipstream + SOCKS tunnel"
-    echo "    d2  = DNSTT + SOCKS tunnel"
-    echo "    s2  = Slipstream + SSH tunnel"
-    echo "    ds2 = DNSTT + SSH tunnel"
+    echo "    t   = Slipstream + SOCKS tunnel"
+    echo "    d   = DNSTT + SOCKS tunnel"
+    echo "    s   = Slipstream + SSH tunnel"
+    echo "    ds  = DNSTT + SSH tunnel"
     echo ""
 
     if ! prompt_yn "Have you created these DNS records in Cloudflare?" "n"; then
@@ -2308,8 +2308,8 @@ step_create_tunnels() {
     echo -e "  ${DIM}───────────────────────────────────────────────${NC}"
     echo -e "  ${BOLD}Tunnel 1: Slipstream + SOCKS${NC}"
     echo ""
-    if dnstm tunnel add --transport slipstream --backend socks --domain "t2.${DOMAIN}" --tag slip1 2>&1; then
-        print_ok "Created: slip1 (Slipstream + SOCKS) on t2.${DOMAIN}"
+    if dnstm tunnel add --transport slipstream --backend socks --domain "t.${DOMAIN}" --tag slip1 2>&1; then
+        print_ok "Created: slip1 (Slipstream + SOCKS) on t.${DOMAIN}"
         any_created=true
     else
         print_warn "Tunnel slip1 may already exist or creation failed"
@@ -2322,7 +2322,7 @@ step_create_tunnels() {
     echo -e "  ${BOLD}Tunnel 2: DNSTT + SOCKS${NC}"
     echo ""
     local dnstt_output
-    dnstt_output=$(dnstm tunnel add --transport dnstt --backend socks --domain "d2.${DOMAIN}" --tag dnstt1 --mtu "$DNSTT_MTU" 2>&1) || true
+    dnstt_output=$(dnstm tunnel add --transport dnstt --backend socks --domain "d.${DOMAIN}" --tag dnstt1 --mtu "$DNSTT_MTU" 2>&1) || true
     echo "$dnstt_output"
 
     # Try to extract DNSTT public key
@@ -2332,7 +2332,7 @@ step_create_tunnels() {
     fi
 
     if [[ -n "$DNSTT_PUBKEY" ]]; then
-        print_ok "Created: dnstt1 (DNSTT + SOCKS) on d2.${DOMAIN}"
+        print_ok "Created: dnstt1 (DNSTT + SOCKS) on d.${DOMAIN}"
         any_created=true
         echo ""
         echo -e "  ${BOLD}${YELLOW}DNSTT Public Key (save this!):${NC}"
@@ -2347,8 +2347,8 @@ step_create_tunnels() {
     echo -e "  ${DIM}───────────────────────────────────────────────${NC}"
     echo -e "  ${BOLD}Tunnel 3: Slipstream + SSH${NC}"
     echo ""
-    if dnstm tunnel add --transport slipstream --backend ssh --domain "s2.${DOMAIN}" --tag slip-ssh 2>&1; then
-        print_ok "Created: slip-ssh (Slipstream + SSH) on s2.${DOMAIN}"
+    if dnstm tunnel add --transport slipstream --backend ssh --domain "s.${DOMAIN}" --tag slip-ssh 2>&1; then
+        print_ok "Created: slip-ssh (Slipstream + SSH) on s.${DOMAIN}"
         any_created=true
     else
         print_warn "Tunnel slip-ssh may already exist or creation failed"
@@ -2360,8 +2360,8 @@ step_create_tunnels() {
     echo -e "  ${DIM}───────────────────────────────────────────────${NC}"
     echo -e "  ${BOLD}Tunnel 4: DNSTT + SSH${NC}"
     echo ""
-    if dnstm tunnel add --transport dnstt --backend ssh --domain "ds2.${DOMAIN}" --tag dnstt-ssh --mtu "$DNSTT_MTU" 2>&1; then
-        print_ok "Created: dnstt-ssh (DNSTT + SSH) on ds2.${DOMAIN}"
+    if dnstm tunnel add --transport dnstt --backend ssh --domain "ds.${DOMAIN}" --tag dnstt-ssh --mtu "$DNSTT_MTU" 2>&1; then
+        print_ok "Created: dnstt-ssh (DNSTT + SSH) on ds.${DOMAIN}"
         any_created=true
     else
         print_warn "Tunnel dnstt-ssh may already exist or creation failed"
@@ -2484,7 +2484,7 @@ step_verify_microsocks() {
 
     # Ask about SOCKS authentication
     echo ""
-    print_info "SOCKS tunnels (t2/d2) currently have no authentication."
+    print_info "SOCKS tunnels (t/d) currently have no authentication."
     print_info "Adding authentication makes the proxy secure — only clients with"
     print_info "the correct username and password can connect."
     echo ""
@@ -2615,11 +2615,11 @@ step_ssh_user() {
 
     print_info "An SSH tunnel user allows clients to connect via Slipstream + SSH or DNSTT + SSH."
     print_info "This user can only create tunnels and has no shell access."
-    print_warn "Without an SSH tunnel user, the SSH tunnels (s2/ds2) will NOT work."
+    print_warn "Without an SSH tunnel user, the SSH tunnels (s/ds) will NOT work."
     echo ""
 
     if ! prompt_yn "Create an SSH tunnel user? (required for SSH tunnels to work)" "y"; then
-        print_warn "Skipping SSH user setup — SSH tunnels (s2.${DOMAIN}, ds2.${DOMAIN}) will not work"
+        print_warn "Skipping SSH user setup — SSH tunnels (s.${DOMAIN}, ds.${DOMAIN}) will not work"
         print_info "You can create one later with: sshtun-user create <username> --insecure-password <pass>"
         return
     fi
@@ -2793,13 +2793,13 @@ step_tests() {
     echo -e "  ${BOLD}Test 5: DNS Delegation${NC}"
     if command -v dig &>/dev/null; then
         local dig_result
-        dig_result=$(dig +short +timeout=5 +tries=1 "dnstm-test.t2.${DOMAIN}" @8.8.8.8 2>/dev/null || true)
+        dig_result=$(dig +short +timeout=5 +tries=1 "dnstm-test.t.${DOMAIN}" @8.8.8.8 2>/dev/null || true)
         if [[ -n "$dig_result" ]]; then
             print_ok "DNS delegation: PASS (query reached server via 8.8.8.8)"
             pass=$((pass + 1))
         else
             # Try Cloudflare resolver as fallback
-            dig_result=$(dig +short +timeout=5 +tries=1 "dnstm-test.t2.${DOMAIN}" @1.1.1.1 2>/dev/null || true)
+            dig_result=$(dig +short +timeout=5 +tries=1 "dnstm-test.t.${DOMAIN}" @1.1.1.1 2>/dev/null || true)
             if [[ -n "$dig_result" ]]; then
                 print_ok "DNS delegation: PASS (query reached server via 1.1.1.1)"
                 pass=$((pass + 1))
@@ -2807,13 +2807,13 @@ step_tests() {
                 print_warn "DNS delegation: No response from public resolvers"
                 print_info "This may mean DNS records are not set up correctly in Cloudflare,"
                 print_info "or it may take a few minutes for DNS to propagate."
-                print_info "Test manually: dig t2.${DOMAIN} @8.8.8.8"
+                print_info "Test manually: dig t.${DOMAIN} @8.8.8.8"
                 fail=$((fail + 1))
             fi
         fi
     else
         print_info "DNS delegation: SKIPPED (dig not installed — install with: apt install dnsutils)"
-        print_info "Test manually: nslookup t2.${DOMAIN} 8.8.8.8"
+        print_info "Test manually: nslookup t.${DOMAIN} 8.8.8.8"
         pass=$((pass + 1))
     fi
     echo ""
@@ -2825,12 +2825,12 @@ step_tests() {
             print_ok "SSH: PASS (sshd running, tunnel user '${SSH_USER}' created)"
             pass=$((pass + 1))
         else
-            print_warn "SSH: sshd running but no tunnel user created — SSH tunnels (s2/ds2) will not work"
+            print_warn "SSH: sshd running but no tunnel user created — SSH tunnels (s/ds) will not work"
             print_info "Create one with: sshtun-user create <username> --insecure-password <pass>"
             fail=$((fail + 1))
         fi
     else
-        print_warn "SSH: sshd not detected on port 22 — SSH tunnels (s2/ds2) will not work"
+        print_warn "SSH: sshd not detected on port 22 — SSH tunnels (s/ds) will not work"
         print_info "Start sshd with: systemctl start sshd"
         fail=$((fail + 1))
     fi
@@ -2875,10 +2875,10 @@ step_summary() {
 
     echo -e "  ${BOLD}Tunnel Endpoints${NC}"
     echo -e "  ${DIM}────────────────────────────────────────${NC}"
-    echo -e "  Slipstream + SOCKS:  ${GREEN}t2.${DOMAIN}${NC}"
-    echo -e "  DNSTT + SOCKS:       ${GREEN}d2.${DOMAIN}${NC}"
-    echo -e "  Slipstream + SSH:    ${GREEN}s2.${DOMAIN}${NC}"
-    echo -e "  DNSTT + SSH:         ${GREEN}ds2.${DOMAIN}${NC}"
+    echo -e "  Slipstream + SOCKS:  ${GREEN}t.${DOMAIN}${NC}"
+    echo -e "  DNSTT + SOCKS:       ${GREEN}d.${DOMAIN}${NC}"
+    echo -e "  Slipstream + SSH:    ${GREEN}s.${DOMAIN}${NC}"
+    echo -e "  DNSTT + SSH:         ${GREEN}ds.${DOMAIN}${NC}"
     echo ""
 
     if [[ -n "$DNSTT_PUBKEY" ]]; then
@@ -2925,16 +2925,16 @@ step_summary() {
         s_pass="$SOCKS_PASS"
     fi
     # Slipstream + SOCKS
-    slipnet_url=$(generate_slipnet_url "ss" "t2" "" "" "" "$s_user" "$s_pass")
+    slipnet_url=$(generate_slipnet_url "ss" "t" "" "" "" "$s_user" "$s_pass")
     echo -e "  ${GREEN}slip1:${NC}    ${slipnet_url}"
     # DNSTT + SOCKS
     if [[ -n "$DNSTT_PUBKEY" ]]; then
-        slipnet_url=$(generate_slipnet_url "dnstt" "d2" "$DNSTT_PUBKEY" "" "" "$s_user" "$s_pass")
+        slipnet_url=$(generate_slipnet_url "dnstt" "d" "$DNSTT_PUBKEY" "" "" "$s_user" "$s_pass")
         echo -e "  ${GREEN}dnstt1:${NC}   ${slipnet_url}"
     fi
     # SSH tunnels
     if [[ "$SSH_SETUP_DONE" == true && -n "$SSH_USER" && -n "$SSH_PASS" ]]; then
-        slipnet_url=$(generate_slipnet_url "slipstream_ssh" "s2" "" "$SSH_USER" "$SSH_PASS" "$s_user" "$s_pass")
+        slipnet_url=$(generate_slipnet_url "slipstream_ssh" "s" "" "$SSH_USER" "$SSH_PASS" "$s_user" "$s_pass")
         echo -e "  ${GREEN}slip-ssh:${NC} ${slipnet_url}"
         # dnstt-ssh has its own keypair — read from its own tunnel dir
         local dnstt_ssh_pubkey=""
@@ -2942,7 +2942,7 @@ step_summary() {
             dnstt_ssh_pubkey=$(cat /etc/dnstm/tunnels/dnstt-ssh/server.pub 2>/dev/null || true)
         fi
         if [[ -n "$dnstt_ssh_pubkey" ]]; then
-            slipnet_url=$(generate_slipnet_url "dnstt_ssh" "ds2" "$dnstt_ssh_pubkey" "$SSH_USER" "$SSH_PASS" "$s_user" "$s_pass")
+            slipnet_url=$(generate_slipnet_url "dnstt_ssh" "ds" "$dnstt_ssh_pubkey" "$SSH_USER" "$SSH_PASS" "$s_user" "$s_pass")
             echo -e "  ${GREEN}dnstt-ssh:${NC} ${slipnet_url}"
         fi
     fi
@@ -2957,7 +2957,7 @@ step_summary() {
     else
         echo -e "  ${BOLD}SOCKS Proxy Authentication${NC}"
         echo -e "  ${DIM}────────────────────────────────────────${NC}"
-        echo -e "  ${YELLOW}⚠ No authentication — SOCKS tunnels (t2/d2) are open${NC}"
+        echo -e "  ${YELLOW}⚠ No authentication — SOCKS tunnels (t/d) are open${NC}"
         echo ""
     fi
 
@@ -2971,7 +2971,7 @@ step_summary() {
     else
         echo -e "  ${BOLD}SSH Tunnel User${NC}"
         echo -e "  ${DIM}────────────────────────────────────────${NC}"
-        echo -e "  ${YELLOW}⚠ Not configured — SSH tunnels (s2/ds2) will not work${NC}"
+        echo -e "  ${YELLOW}⚠ Not configured — SSH tunnels (s/ds) will not work${NC}"
         echo -e "  Create one with: ${BOLD}sshtun-user create <username> --insecure-password <pass>${NC}"
         echo ""
     fi
@@ -3104,10 +3104,10 @@ do_add_domain() {
         "Record 1:  Type: A   | Name: ns  | Value: ${SERVER_IP}" \
         "           Proxy: OFF (DNS Only - grey cloud)" \
         "" \
-        "Record 2:  Type: NS  | Name: t2  | Value: ns.${DOMAIN}" \
-        "Record 3:  Type: NS  | Name: d2  | Value: ns.${DOMAIN}" \
-        "Record 4:  Type: NS  | Name: s2  | Value: ns.${DOMAIN}" \
-        "Record 5:  Type: NS  | Name: ds2 | Value: ns.${DOMAIN}"
+        "Record 2:  Type: NS  | Name: t   | Value: ns.${DOMAIN}" \
+        "Record 3:  Type: NS  | Name: d   | Value: ns.${DOMAIN}" \
+        "Record 4:  Type: NS  | Name: s   | Value: ns.${DOMAIN}" \
+        "Record 5:  Type: NS  | Name: ds  | Value: ns.${DOMAIN}"
 
     echo ""
     print_warn "IMPORTANT: The A record MUST be DNS Only (grey cloud, NOT orange)"
@@ -3155,8 +3155,8 @@ do_add_domain() {
     echo -e "  ${DIM}───────────────────────────────────────────────${NC}"
     echo -e "  ${BOLD}Tunnel: Slipstream + SOCKS${NC}"
     echo ""
-    if dnstm tunnel add --transport slipstream --backend socks --domain "t2.${DOMAIN}" --tag "$slip_tag" 2>&1; then
-        print_ok "Created: ${slip_tag} (Slipstream + SOCKS) on t2.${DOMAIN}"
+    if dnstm tunnel add --transport slipstream --backend socks --domain "t.${DOMAIN}" --tag "$slip_tag" 2>&1; then
+        print_ok "Created: ${slip_tag} (Slipstream + SOCKS) on t.${DOMAIN}"
     else
         print_warn "Tunnel ${slip_tag} may already exist or creation failed"
     fi
@@ -3167,7 +3167,7 @@ do_add_domain() {
     echo -e "  ${BOLD}Tunnel: DNSTT + SOCKS${NC}"
     echo ""
     local dnstt_output
-    dnstt_output=$(dnstm tunnel add --transport dnstt --backend socks --domain "d2.${DOMAIN}" --tag "$dnstt_tag" --mtu "$DNSTT_MTU" 2>&1) || true
+    dnstt_output=$(dnstm tunnel add --transport dnstt --backend socks --domain "d.${DOMAIN}" --tag "$dnstt_tag" --mtu "$DNSTT_MTU" 2>&1) || true
     echo "$dnstt_output"
 
     DNSTT_PUBKEY=""
@@ -3176,7 +3176,7 @@ do_add_domain() {
     fi
 
     if [[ -n "$DNSTT_PUBKEY" ]]; then
-        print_ok "Created: ${dnstt_tag} (DNSTT + SOCKS) on d2.${DOMAIN}"
+        print_ok "Created: ${dnstt_tag} (DNSTT + SOCKS) on d.${DOMAIN}"
         echo ""
         echo -e "  ${BOLD}${YELLOW}DNSTT Public Key (save this!):${NC}"
         echo -e "  ${GREEN}${DNSTT_PUBKEY}${NC}"
@@ -3189,8 +3189,8 @@ do_add_domain() {
     echo -e "  ${DIM}───────────────────────────────────────────────${NC}"
     echo -e "  ${BOLD}Tunnel: Slipstream + SSH${NC}"
     echo ""
-    if dnstm tunnel add --transport slipstream --backend ssh --domain "s2.${DOMAIN}" --tag "$slip_ssh_tag" 2>&1; then
-        print_ok "Created: ${slip_ssh_tag} (Slipstream + SSH) on s2.${DOMAIN}"
+    if dnstm tunnel add --transport slipstream --backend ssh --domain "s.${DOMAIN}" --tag "$slip_ssh_tag" 2>&1; then
+        print_ok "Created: ${slip_ssh_tag} (Slipstream + SSH) on s.${DOMAIN}"
     else
         print_warn "Tunnel ${slip_ssh_tag} may already exist or creation failed"
     fi
@@ -3200,8 +3200,8 @@ do_add_domain() {
     echo -e "  ${DIM}───────────────────────────────────────────────${NC}"
     echo -e "  ${BOLD}Tunnel: DNSTT + SSH${NC}"
     echo ""
-    if dnstm tunnel add --transport dnstt --backend ssh --domain "ds2.${DOMAIN}" --tag "$dnstt_ssh_tag" --mtu "$DNSTT_MTU" 2>&1; then
-        print_ok "Created: ${dnstt_ssh_tag} (DNSTT + SSH) on ds2.${DOMAIN}"
+    if dnstm tunnel add --transport dnstt --backend ssh --domain "ds.${DOMAIN}" --tag "$dnstt_ssh_tag" --mtu "$DNSTT_MTU" 2>&1; then
+        print_ok "Created: ${dnstt_ssh_tag} (DNSTT + SSH) on ds.${DOMAIN}"
     else
         print_warn "Tunnel ${dnstt_ssh_tag} may already exist or creation failed"
     fi
@@ -3277,10 +3277,10 @@ do_add_domain() {
 
     echo -e "  ${BOLD}Tunnel Endpoints${NC}"
     echo -e "  ${DIM}────────────────────────────────────────${NC}"
-    echo -e "  Slipstream + SOCKS:  ${GREEN}t2.${DOMAIN}${NC}  (${slip_tag})"
-    echo -e "  DNSTT + SOCKS:       ${GREEN}d2.${DOMAIN}${NC}  (${dnstt_tag})"
-    echo -e "  Slipstream + SSH:    ${GREEN}s2.${DOMAIN}${NC}  (${slip_ssh_tag})"
-    echo -e "  DNSTT + SSH:         ${GREEN}ds2.${DOMAIN}${NC}  (${dnstt_ssh_tag})"
+    echo -e "  Slipstream + SOCKS:  ${GREEN}t.${DOMAIN}${NC}  (${slip_tag})"
+    echo -e "  DNSTT + SOCKS:       ${GREEN}d.${DOMAIN}${NC}  (${dnstt_tag})"
+    echo -e "  Slipstream + SSH:    ${GREEN}s.${DOMAIN}${NC}  (${slip_ssh_tag})"
+    echo -e "  DNSTT + SSH:         ${GREEN}ds.${DOMAIN}${NC}  (${dnstt_ssh_tag})"
     echo ""
 
     if [[ -n "$DNSTT_PUBKEY" ]]; then
@@ -3322,10 +3322,10 @@ do_add_domain() {
         s_user="$SOCKS_USER"
         s_pass="$SOCKS_PASS"
     fi
-    slipnet_url=$(generate_slipnet_url "ss" "t2" "" "" "" "$s_user" "$s_pass")
+    slipnet_url=$(generate_slipnet_url "ss" "t" "" "" "" "$s_user" "$s_pass")
     echo -e "  ${GREEN}${slip_tag}:${NC}    ${slipnet_url}"
     if [[ -n "$DNSTT_PUBKEY" ]]; then
-        slipnet_url=$(generate_slipnet_url "dnstt" "d2" "$DNSTT_PUBKEY" "" "" "$s_user" "$s_pass")
+        slipnet_url=$(generate_slipnet_url "dnstt" "d" "$DNSTT_PUBKEY" "" "" "$s_user" "$s_pass")
         echo -e "  ${GREEN}${dnstt_tag}:${NC}   ${slipnet_url}"
     fi
     echo -e "  ${DIM}SSH tunnel slipnet:// URLs require credentials. Use --manage → Manage SSH users first.${NC}"
