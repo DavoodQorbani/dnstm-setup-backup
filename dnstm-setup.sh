@@ -2032,6 +2032,12 @@ install_3xui() {
     local admin_pass="$2"
     local panel_port="$3"
 
+    # Ensure sqlite3 is available (needed to set credentials after install)
+    if ! command -v sqlite3 &>/dev/null; then
+        print_info "Installing sqlite3 (needed for panel credential setup)..."
+        apt-get install -y -qq sqlite3 2>/dev/null || true
+    fi
+
     print_info "Downloading and installing 3x-ui..."
     echo ""
 
@@ -2904,7 +2910,7 @@ do_add_xray() {
                 new_pass=$(prompt_input "Panel admin password" "password")
                 echo ""
                 new_port=$(prompt_input "Panel web port" "2053")
-                if ! [[ "$new_port" =~ ^[0-9]+$ ]]; then
+                if ! [[ "$new_port" =~ ^[0-9]+$ ]] || [[ "$new_port" -lt 1 ]] || [[ "$new_port" -gt 65535 ]]; then
                     new_port=2053
                 fi
                 echo ""
