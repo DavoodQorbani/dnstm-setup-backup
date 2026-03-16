@@ -3602,8 +3602,16 @@ step_install_dnstm() {
     # NoizDNS uses "arm" not "armv7" for ARM builds
     local noizdns_arch="$arch"
     [[ "$noizdns_arch" == "armv7" ]] && noizdns_arch="arm"
-    local noizdns_url="https://raw.githubusercontent.com/anonvector/noizdns-deploy/main/bin/dnstt-server-linux-${noizdns_arch}"
-    if curl -fsSL -o /usr/local/bin/noizdns-server "$noizdns_url" 2>/dev/null; then
+    # Try GitHub Releases first (less likely blocked), then raw content as fallback
+    local noizdns_downloaded=false
+    local noizdns_release_url="https://github.com/anonvector/noizdns-deploy/releases/latest/download/dnstt-server-linux-${noizdns_arch}"
+    local noizdns_raw_url="https://raw.githubusercontent.com/anonvector/noizdns-deploy/main/bin/dnstt-server-linux-${noizdns_arch}"
+    if curl -fsSL -o /usr/local/bin/noizdns-server "$noizdns_release_url" 2>/dev/null; then
+        noizdns_downloaded=true
+    elif curl -fsSL -o /usr/local/bin/noizdns-server "$noizdns_raw_url" 2>/dev/null; then
+        noizdns_downloaded=true
+    fi
+    if [[ "$noizdns_downloaded" == true ]]; then
         chmod +x /usr/local/bin/noizdns-server
         # Verify binary is real (not HTML error page, 0-byte, or wrong architecture)
         if [[ ! -s /usr/local/bin/noizdns-server ]]; then
@@ -3616,7 +3624,8 @@ step_install_dnstm() {
             rm -f /usr/local/bin/noizdns-server
         fi
     else
-        print_warn "Could not download NoizDNS server (NoizDNS tunnels will be skipped)"
+        print_warn "Could not download NoizDNS server from any source (NoizDNS tunnels will be skipped)"
+        print_info "Manual install: curl -fsSL -o /usr/local/bin/noizdns-server ${noizdns_release_url}"
     fi
 }
 
