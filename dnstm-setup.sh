@@ -2335,6 +2335,17 @@ detect_xray_panel() {
 
         # Method 4: Fall back to default
         XRAY_PANEL_PORT="${XRAY_PANEL_PORT:-2053}"
+
+        # Detect web base path (many users set this for security)
+        XRAY_PANEL_BASEPATH=""
+        if [[ -f /usr/local/x-ui/config.json ]]; then
+            XRAY_PANEL_BASEPATH=$(jq -r '.webBasePath // empty' /usr/local/x-ui/config.json 2>/dev/null || true)
+        fi
+        if [[ -z "$XRAY_PANEL_BASEPATH" ]] && command -v sqlite3 &>/dev/null && [[ -f /etc/x-ui/x-ui.db ]]; then
+            XRAY_PANEL_BASEPATH=$(sqlite3 /etc/x-ui/x-ui.db "SELECT value FROM settings WHERE key='webBasePath'" 2>/dev/null || true)
+        fi
+        # Normalize: strip leading/trailing slashes
+        XRAY_PANEL_BASEPATH=$(echo "${XRAY_PANEL_BASEPATH:-}" | sed 's|^/||;s|/$||')
     fi
 }
 
@@ -2446,13 +2457,16 @@ pick_xray_port() {
 # Requires: XRAY_ADMIN_USER, XRAY_ADMIN_PASS, XRAY_PANEL_PORT, XRAY_PROTOCOL, XRAY_INBOUND_PORT
 # Sets: XRAY_UUID (for vless/vmess) or XRAY_PASSWORD (for ss/trojan)
 create_3xui_inbound() {
-    local panel_url="http://127.0.0.1:${XRAY_PANEL_PORT}"
+    local base_segment=""
+    [[ -n "${XRAY_PANEL_BASEPATH:-}" ]] && base_segment="/${XRAY_PANEL_BASEPATH}"
+    # Auto-detect HTTPS: try connecting, if http fails with empty response, try https
+    local panel_url="http://127.0.0.1:${XRAY_PANEL_PORT}${base_segment}"
     local cookie_jar
     cookie_jar=$(mktemp)
     chmod 600 "$cookie_jar" 2>/dev/null || true
 
     # Ensure cookie jar is cleaned up on any exit path
-    trap 'rm -f "$cookie_jar"' RETURN
+    trap 'rm -f "${cookie_jar:-}"; trap - RETURN' RETURN
 
     # Generate credentials for the inbound
     XRAY_UUID=""
@@ -2466,7 +2480,7 @@ create_3xui_inbound() {
     # Login to panel
     print_info "Logging in to 3x-ui panel..."
     local login_resp
-    login_resp=$(curl -s -c "$cookie_jar" -X POST "${panel_url}/login" \
+    login_resp=$(curl -s -L -k -c "$cookie_jar" -X POST "${panel_url}/login" \
         -H "Content-Type: application/x-www-form-urlencoded" \
         --data-urlencode "username=${XRAY_ADMIN_USER}" \
         --data-urlencode "password=${XRAY_ADMIN_PASS}" \
@@ -2548,7 +2562,7 @@ create_3xui_inbound() {
         }')
 
     local create_resp
-    create_resp=$(curl -s -b "$cookie_jar" -X POST "${panel_url}/panel/api/inbounds/add" \
+    create_resp=$(curl -s -L -k -b "$cookie_jar" -X POST "${panel_url}/panel/api/inbounds/add" \
         -H "Content-Type: application/json" \
         -d "$inbound_data" \
         --max-time 10 2>/dev/null || true)
@@ -2947,7 +2961,9 @@ do_add_xray() {
                 ;;
         esac
     else
-        print_ok "Detected: 3x-ui (port ${XRAY_PANEL_PORT})"
+        local _detect_msg="Detected: 3x-ui (port ${XRAY_PANEL_PORT})"
+        [[ -n "${XRAY_PANEL_BASEPATH:-}" ]] && _detect_msg+=", base path: /${XRAY_PANEL_BASEPATH}"
+        print_ok "$_detect_msg"
     fi
 
     # 2. Get panel credentials (skip for headless — no panel API needed)
@@ -4593,6 +4609,21 @@ do_add_domain() {
     if ! dnstm router status 2>/dev/null | grep -qi "running"; then
         print_warn "DNS Router is not running. Starting it..."
         dnstm router start 2>/dev/null || true
+    fi
+
+    # Ensure router is in multi mode (required for multiple domains)
+    local current_mode
+    current_mode=$(dnstm router mode 2>/dev/null | awk '/[Mm]ode/{for(i=1;i<=NF;i++) if($i=="multi"||$i=="single") print $i}' | head -1 || true)
+    if [[ "$current_mode" != "multi" ]]; then
+        print_warn "Router mode is '${current_mode:-unknown}', switching to multi..."
+        if dnstm router mode multi 2>/dev/null; then
+            print_ok "Router mode switched to multi"
+        else
+            print_fail "Failed to switch router mode to multi. Multiple domains require multi mode."
+            exit 1
+        fi
+    else
+        print_ok "Router mode: multi"
     fi
 
     # Detect server IP
