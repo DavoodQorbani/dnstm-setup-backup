@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# dnstm-setup v1.3
+# dnstm-setup v1.3.1
 # Interactive DNS Tunnel Setup
 # Sets up Slipstream + DNSTT + NoizDNS tunnels for censorship-resistant internet access
 #
@@ -10,7 +10,7 @@
 
 set -euo pipefail
 
-VERSION="1.3"
+VERSION="1.3.1"
 TOTAL_STEPS=12
 
 # ─── Safety: ensure DNS is never left broken on exit ──────────────────────────
@@ -503,6 +503,7 @@ show_help() {
     echo "  --users        Manage SSH tunnel users (add, list, update, delete)"
     echo "  --mtu <value>  Set DNSTT MTU size (512-1400, default: 1232)"
     echo "  --harden       Apply service and resolver hardening to an existing setup"
+    echo "  --update       Check for updates and install latest version"
     echo "  --uninstall    Remove all installed components"
     echo ""
     echo -e "${BOLD}WHAT THIS SCRIPT SETS UP${NC}"
@@ -1943,6 +1944,100 @@ do_add_tunnel() {
 }
 
 # ─── --uninstall ────────────────────────────────────────────────────────────────
+
+do_update() {
+    print_header "Update dnstm-setup"
+
+    local REPO_URL="https://raw.githubusercontent.com/SamNet-dev/dnstm-setup/master/dnstm-setup.sh"
+    local current_version="$VERSION"
+
+    # Find the script path early so we can bail if it's not writable
+    local script_path
+    script_path=$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || echo "$0")
+    if [[ ! -f "$script_path" ]]; then
+        print_fail "Cannot determine script location. Run update manually:"
+        print_info "curl -sO ${REPO_URL} && chmod +x dnstm-setup.sh"
+        echo ""
+        read -rp "  Press Enter to return to menu..." _
+        return 1
+    fi
+
+    # Download to temp file
+    print_info "Checking for updates..."
+    local tmp_file="${script_path}.tmp"
+    if ! curl -fsSL --max-time 15 -o "$tmp_file" "$REPO_URL" 2>/dev/null; then
+        print_fail "Could not reach GitHub. Check your internet connection."
+        rm -f "$tmp_file" 2>/dev/null || true
+        echo ""
+        read -rp "  Press Enter to return to menu..." _
+        return 1
+    fi
+
+    # Validate: must be a bash script
+    if ! head -1 "$tmp_file" 2>/dev/null | grep -q "bash"; then
+        print_fail "Downloaded file is not a valid script"
+        rm -f "$tmp_file"
+        echo ""
+        read -rp "  Press Enter to return to menu..." _
+        return 1
+    fi
+
+    # Extract remote version
+    local remote_version
+    remote_version=$(grep -m1 '^VERSION=' "$tmp_file" | sed 's/VERSION="//;s/"//')
+
+    if [[ -z "$remote_version" ]]; then
+        print_warn "Could not detect remote version"
+        rm -f "$tmp_file"
+        echo ""
+        read -rp "  Press Enter to return to menu..." _
+        return 1
+    fi
+
+    echo -e "  Current version:  ${YELLOW}v${current_version}${NC}"
+    echo -e "  Latest version:   ${GREEN}v${remote_version}${NC}"
+    echo ""
+
+    if [[ "$current_version" == "$remote_version" ]]; then
+        print_ok "You are already on the latest version."
+        rm -f "$tmp_file"
+        echo ""
+        read -rp "  Press Enter to return to menu..." _
+        return 0
+    fi
+
+    if ! prompt_yn "Update to v${remote_version}?" "y"; then
+        print_info "Update cancelled."
+        rm -f "$tmp_file"
+        echo ""
+        read -rp "  Press Enter to return to menu..." _
+        return 0
+    fi
+
+    # Fix CRLF line endings if any
+    sed -i 's/\r$//' "$tmp_file" 2>/dev/null || true
+
+    # Replace script
+    chmod +x "$tmp_file"
+    mv -f "$tmp_file" "$script_path"
+
+    # Also update /usr/local/bin if installed there
+    if [[ -f /usr/local/bin/dnstm-setup ]] && [[ "$script_path" != "/usr/local/bin/dnstm-setup" ]]; then
+        cp -f "$script_path" /usr/local/bin/dnstm-setup
+        chmod +x /usr/local/bin/dnstm-setup
+    fi
+
+    echo ""
+    print_ok "Updated to v${remote_version}!"
+    print_info "Restarting with new version..."
+    echo ""
+    sleep 1
+
+    # Signal the parent menu loop to re-exec (write a marker file)
+    local update_marker="/tmp/.dnstm-update-reexec"
+    echo "$script_path" > "$update_marker"
+    exit 0
+}
 
 do_uninstall() {
     banner
@@ -3619,13 +3714,14 @@ do_manage() {
         echo -e "  ${BOLD}9)${NC}  Change DNSTT MTU      ${DIM}(change MTU on existing DNSTT tunnels)${NC}"
         echo ""
         echo -e "  ${DIM}──────────────────────────────────────────────${NC}"
-        echo -e "  ${BOLD}${RED}10)${NC} ${RED}Uninstall everything${NC}"
+        echo -e "  ${BOLD}10)${NC} Update script         ${DIM}(check for new versions)${NC}"
+        echo -e "  ${BOLD}${RED}11)${NC} ${RED}Uninstall everything${NC}"
         echo ""
         echo -e "  ${BOLD}0)${NC}  Exit"
         echo ""
 
         local choice=""
-        read -rp "  Select [0-10]: " choice || break
+        read -rp "  Select [0-11]: " choice || break
 
         case "$choice" in
             1)
@@ -3656,6 +3752,16 @@ do_manage() {
                 ( trap - INT; do_change_mtu ) || true
                 ;;
             10)
+                ( trap - INT; do_update ) || true
+                # If update wrote the re-exec marker, restart with new version
+                if [[ -f /tmp/.dnstm-update-reexec ]]; then
+                    local reexec_path
+                    reexec_path=$(cat /tmp/.dnstm-update-reexec)
+                    rm -f /tmp/.dnstm-update-reexec
+                    exec bash "$reexec_path" --manage
+                fi
+                ;;
+            11)
                 ( trap - INT; do_uninstall ) || true
                 # If uninstall succeeded, dnstm is gone — exit menu
                 hash -d dnstm 2>/dev/null || true
@@ -3674,7 +3780,7 @@ do_manage() {
                 continue
                 ;;
             *)
-                print_warn "Invalid choice. Enter 0-10."
+                print_warn "Invalid choice. Enter 0-11."
                 sleep 1
                 continue
                 ;;
@@ -5205,6 +5311,7 @@ step_summary() {
     echo "    - Manage SSH tunnel users"
     echo "    - Change DNSTT MTU"
     echo "    - View status, logs, and share URLs"
+    echo "    - Update to latest version"
     echo "    - Harden or uninstall"
     echo ""
 
@@ -5742,6 +5849,7 @@ ADD_DOMAIN_MODE=false
 ADD_DOMAIN_ARG=""
 ADD_XRAY_MODE=false
 HARDEN_ONLY_MODE=false
+UPDATE_MODE=false
 MANAGE_USERS_MODE=false
 DNSTT_MTU=1232
 
@@ -5802,6 +5910,10 @@ while [[ $# -gt 0 ]]; do
             HARDEN_ONLY_MODE=true
             shift
             ;;
+        --update)
+            UPDATE_MODE=true
+            shift
+            ;;
         --mtu)
             if [[ -n "${2:-}" ]] && [[ "$2" =~ ^[0-9]+$ ]] && [[ "$2" -ge 512 ]] && [[ "$2" -le 1400 ]]; then
                 DNSTT_MTU="$2"
@@ -5825,9 +5937,10 @@ mode_count=0
 [[ "$ADD_DOMAIN_MODE" == true ]] && ((mode_count++)) || true
 [[ "$ADD_XRAY_MODE" == true ]] && ((mode_count++)) || true
 [[ "$HARDEN_ONLY_MODE" == true ]] && ((mode_count++)) || true
+[[ "$UPDATE_MODE" == true ]] && ((mode_count++)) || true
 [[ "$MANAGE_USERS_MODE" == true ]] && ((mode_count++)) || true
 if [[ $mode_count -gt 1 ]]; then
-    echo "Error: --add-domain, --add-xray, --harden, and --users cannot be combined."
+    echo "Error: --add-domain, --add-xray, --harden, --update, and --users cannot be combined."
     exit 1
 fi
 
@@ -5854,6 +5967,8 @@ main() {
 
 if [[ "$HARDEN_ONLY_MODE" == true ]]; then
     do_harden
+elif [[ "$UPDATE_MODE" == true ]]; then
+    do_update
 elif [[ "$ADD_DOMAIN_MODE" == true ]]; then
     do_add_domain
 elif [[ "$ADD_XRAY_MODE" == true ]]; then
