@@ -4079,17 +4079,32 @@ step_start_services() {
     # ── 2. Verify NoizDNS tunnels actually started ──────────────────────────────
     # If NoizDNS services failed (wrong binary, bad config, etc.), remove them
     # so the DNS Router doesn't crash-loop trying to connect to dead backends.
-    sleep 1
+    sleep 3
     for noiz_tag in noiz1 noiz-ssh; do
         if dnstm tunnel list 2>/dev/null | grep -q "tag=${noiz_tag}"; then
             if ! systemctl is-active --quiet "dnstm-${noiz_tag}.service" 2>/dev/null; then
-                print_warn "NoizDNS tunnel ${noiz_tag} failed to start — removing to protect DNS Router"
-                dnstm tunnel stop --tag "$noiz_tag" 2>/dev/null || true
-                dnstm tunnel remove --tag "$noiz_tag" 2>/dev/null || true
-                rm -f "/etc/systemd/system/dnstm-${noiz_tag}.service.d/10-noizdns-binary.conf" 2>/dev/null || true
-                rmdir "/etc/systemd/system/dnstm-${noiz_tag}.service.d" 2>/dev/null || true
-                systemctl daemon-reload 2>/dev/null || true
-                print_info "Removed ${noiz_tag} — other tunnels will work normally"
+                # Retry — give it more time before removing
+                print_info "Waiting for ${noiz_tag} to start..."
+                sleep 5
+                systemctl restart "dnstm-${noiz_tag}.service" 2>/dev/null || true
+                sleep 3
+                if ! systemctl is-active --quiet "dnstm-${noiz_tag}.service" 2>/dev/null; then
+                    print_warn "NoizDNS tunnel ${noiz_tag} failed to start — removing to protect DNS Router"
+                    local noiz_log
+                    noiz_log=$(journalctl -u "dnstm-${noiz_tag}.service" -n 5 --no-pager 2>/dev/null || true)
+                    if [[ -n "$noiz_log" ]]; then
+                        echo -e "  ${DIM}Last log lines:${NC}"
+                        echo "$noiz_log" | while IFS= read -r l; do echo -e "  ${DIM}${l}${NC}"; done
+                    fi
+                    dnstm tunnel stop --tag "$noiz_tag" 2>/dev/null || true
+                    dnstm tunnel remove --tag "$noiz_tag" 2>/dev/null || true
+                    rm -f "/etc/systemd/system/dnstm-${noiz_tag}.service.d/10-noizdns-binary.conf" 2>/dev/null || true
+                    rmdir "/etc/systemd/system/dnstm-${noiz_tag}.service.d" 2>/dev/null || true
+                    systemctl daemon-reload 2>/dev/null || true
+                    print_info "Removed ${noiz_tag} — other tunnels will work normally"
+                else
+                    print_ok "NoizDNS tunnel ${noiz_tag} started successfully (after retry)"
+                fi
             fi
         fi
     done
@@ -5052,11 +5067,20 @@ do_add_domain() {
     done
 
     # Verify NoizDNS tunnels started — remove dead ones to protect router
-    sleep 1
+    sleep 3
     for _ntag in ${noiz_tag:-} ${noiz_ssh_tag:-}; do
         [[ -z "$_ntag" ]] && continue
         if dnstm tunnel list 2>/dev/null | grep -q "tag=${_ntag}"; then
             if ! systemctl is-active --quiet "dnstm-${_ntag}.service" 2>/dev/null; then
+                # Retry — give it more time before removing
+                print_info "Waiting for ${_ntag} to start..."
+                sleep 5
+                systemctl restart "dnstm-${_ntag}.service" 2>/dev/null || true
+                sleep 3
+                if systemctl is-active --quiet "dnstm-${_ntag}.service" 2>/dev/null; then
+                    print_ok "NoizDNS tunnel ${_ntag} started successfully (after retry)"
+                    continue
+                fi
                 print_warn "NoizDNS tunnel ${_ntag} failed to start — removing to protect DNS Router"
                 dnstm tunnel stop --tag "$_ntag" 2>/dev/null || true
                 dnstm tunnel remove --tag "$_ntag" 2>/dev/null || true
