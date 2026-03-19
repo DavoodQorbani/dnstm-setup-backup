@@ -3362,7 +3362,15 @@ save_xray_config() {
 ensure_noizdns_binary() {
     # Already installed — validate it's actually an ELF binary (not a corrupted download)
     if [[ -x /usr/local/bin/noizdns-server ]]; then
-        if file /usr/local/bin/noizdns-server 2>/dev/null | grep -qi "ELF"; then
+        local _is_elf=false
+        if command -v file &>/dev/null; then
+            file /usr/local/bin/noizdns-server 2>/dev/null | grep -qi "ELF" && _is_elf=true
+        else
+            local _magic
+            _magic=$(xxd -l 4 -p /usr/local/bin/noizdns-server 2>/dev/null || od -A n -t x1 -N 4 /usr/local/bin/noizdns-server 2>/dev/null | tr -d ' ')
+            [[ "$_magic" == "7f454c46" ]] && _is_elf=true
+        fi
+        if [[ "$_is_elf" == true ]]; then
             return 0
         fi
         # Corrupted or invalid binary — remove and re-download
@@ -3406,15 +3414,29 @@ ensure_noizdns_binary() {
             return 1
         fi
         # Validate: must be an ELF binary for this architecture
-        local file_type
-        file_type=$(file /usr/local/bin/noizdns-server 2>/dev/null || true)
-        if echo "$file_type" | grep -qi "ELF.*executable"; then
-            print_ok "NoizDNS server installed and verified"
-            return 0
+        if command -v file &>/dev/null; then
+            local file_type
+            file_type=$(file /usr/local/bin/noizdns-server 2>/dev/null || true)
+            if echo "$file_type" | grep -qi "ELF"; then
+                print_ok "NoizDNS server installed and verified"
+                return 0
+            else
+                print_warn "NoizDNS binary is not a valid executable (got: ${file_type})"
+                rm -f /usr/local/bin/noizdns-server
+                return 1
+            fi
         else
-            print_warn "NoizDNS binary is not a valid executable (got: ${file_type})"
-            rm -f /usr/local/bin/noizdns-server
-            return 1
+            # 'file' command not available — check ELF magic bytes (7f 45 4c 46)
+            local magic
+            magic=$(xxd -l 4 -p /usr/local/bin/noizdns-server 2>/dev/null || od -A n -t x1 -N 4 /usr/local/bin/noizdns-server 2>/dev/null | tr -d ' ')
+            if [[ "$magic" == "7f454c46" ]]; then
+                print_ok "NoizDNS server installed and verified"
+                return 0
+            else
+                print_warn "NoizDNS binary is not a valid ELF executable"
+                rm -f /usr/local/bin/noizdns-server
+                return 1
+            fi
         fi
     else
         print_warn "Could not download NoizDNS server (GitHub may be blocked)"
