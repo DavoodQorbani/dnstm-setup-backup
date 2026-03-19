@@ -1001,6 +1001,32 @@ generate_slipnet_url() {
     echo "slipnet://$(echo -n "$data" | base64 -w0)"
 }
 
+# ─── SSH MAC Compatibility Fix ────────────────────────────────────────────────
+
+fix_ssh_macs() {
+    # sshtun-user configure may set MACs to ETM-only, which breaks clients like
+    # Bitvise and older SSH clients that only support non-ETM MACs.
+    # Add SHA2 non-ETM fallbacks while keeping ETM preferred.
+    local sshd_config="/etc/ssh/sshd_config"
+    [[ -f "$sshd_config" ]] || return 0
+
+    # Check if MACs line exists and is ETM-only (no non-ETM fallbacks)
+    if grep -qE '^MACs\s+.*etm@openssh\.com' "$sshd_config" 2>/dev/null && \
+       ! grep -qE '^MACs\s+.*hmac-sha2-256[^-]' "$sshd_config" 2>/dev/null; then
+        # Add non-ETM SHA2 fallbacks
+        sed -i 's/^\(MACs\s\+.*\)$/\1,hmac-sha2-256,hmac-sha2-512/' "$sshd_config"
+        # Validate before reloading
+        if command -v sshd &>/dev/null && sshd -t 2>/dev/null; then
+            systemctl reload sshd 2>/dev/null || systemctl reload ssh 2>/dev/null || true
+            print_ok "Added SSH MAC compatibility (non-ETM SHA2 fallbacks)"
+        else
+            # Rollback the change
+            sed -i 's/,hmac-sha2-256,hmac-sha2-512$//' "$sshd_config"
+            print_warn "SSH MAC fix failed validation — reverted"
+        fi
+    fi
+}
+
 # ─── microsocks GLIBC Fix ─────────────────────────────────────────────────────
 
 compile_microsocks_from_source() {
@@ -2112,6 +2138,8 @@ do_manage_users() {
                 print_ok "Restored sshd_config from backup"
             fi
         fi
+        # Fix ETM-only MACs for client compatibility (Bitvise, older clients)
+        fix_ssh_macs
         echo ""
     fi
 
@@ -4783,6 +4811,9 @@ step_ssh_user() {
             print_ok "Restored sshd_config from backup"
         fi
     fi
+
+    # Fix ETM-only MACs for client compatibility (Bitvise, older clients)
+    fix_ssh_macs
 
     echo ""
 
