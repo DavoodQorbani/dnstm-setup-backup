@@ -59,7 +59,9 @@ New optional feature to connect an existing **3x-ui panel** (or raw Xray) to a D
 ### Other Improvements
 
 - **7 DNS records** (was 5) — 2 new NS records for NoizDNS subdomains (`n`, `z`)
-- **`--add-domain`** now creates NoizDNS tunnels for backup domains too
+- **`--add-domain`** now creates NoizDNS tunnels for backup domains too (auto-downloads NoizDNS binary if missing)
+- **`--add-tunnel`** (TUI option 2) now offers NoizDNS as a transport choice alongside Slipstream and DNSTT
+- **`--manage`** (TUI option 9) adds Change DNSTT MTU — update MTU on existing DNSTT tunnels without recreating them
 - **`--status`** displays NoizDNS tunnel info and SlipNet URLs
 - **`--remove-tunnel`** properly cleans up Xray and NoizDNS service overrides
 - **Security hardening** — SQL injection prevention, cookie jar cleanup, restrictive file permissions, URL-safe base64 encoding
@@ -400,7 +402,7 @@ sudo bash dnstm-setup.sh --mtu 1200
 # 🌐 Add a backup domain with custom MTU
 sudo bash dnstm-setup.sh --add-domain --mtu 1200
 
-# 🚇 Add a single tunnel (interactive)
+# 🚇 Add a single tunnel (interactive — Slipstream, DNSTT, or NoizDNS)
 sudo bash dnstm-setup.sh --add-tunnel
 
 # 🔌 Connect existing Xray panel (3x-ui) via DNS tunnel
@@ -536,7 +538,7 @@ sudo bash dnstm-setup.sh --manage
 # 📊 Show everything: tunnels, credentials, share URLs (all in one)
 sudo bash dnstm-setup.sh --status
 
-# 🚇 Add a single tunnel (interactive — pick transport, backend, domain, tag)
+# 🚇 Add a single tunnel (interactive — pick Slipstream/DNSTT/NoizDNS, backend, domain, tag)
 sudo bash dnstm-setup.sh --add-tunnel
 
 # 🔌 Add Xray backend (connect existing 3x-ui panel via DNS tunnel)

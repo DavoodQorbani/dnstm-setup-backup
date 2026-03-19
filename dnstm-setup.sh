@@ -1630,19 +1630,30 @@ do_add_tunnel() {
     echo -e "  ${BOLD}Transport:${NC}"
     echo -e "  ${BOLD}1)${NC}  Slipstream  ${DIM}(QUIC + TLS, faster ~63 KB/s)${NC}"
     echo -e "  ${BOLD}2)${NC}  DNSTT       ${DIM}(Noise + Curve25519, ~42 KB/s)${NC}"
+    echo -e "  ${BOLD}3)${NC}  NoizDNS     ${DIM}(DPI-resistant DNSTT fork)${NC}"
     echo ""
     local transport_choice
-    transport_choice=$(prompt_input "Select transport (1-2)" "1")
+    transport_choice=$(prompt_input "Select transport (1-3)" "1")
     local transport
+    local use_noizdns=false
     case "$transport_choice" in
         1) transport="slipstream" ;;
         2) transport="dnstt" ;;
+        3)
+            transport="dnstt"
+            use_noizdns=true
+            # Ensure noizdns binary is available
+            if ! ensure_noizdns_binary; then
+                print_fail "NoizDNS binary not available. Cannot create NoizDNS tunnel."
+                exit 1
+            fi
+            ;;
         *)
-            print_fail "Invalid selection. Use 1 or 2."
+            print_fail "Invalid selection. Use 1, 2, or 3."
             exit 1
             ;;
     esac
-    print_ok "Transport: ${transport}"
+    print_ok "Transport: ${transport}$( [[ "$use_noizdns" == true ]] && echo ' (NoizDNS)' )"
     echo ""
 
     # 2. Choose backend
@@ -1736,6 +1747,14 @@ do_add_tunnel() {
         exit 1
     fi
 
+    # Apply NoizDNS override if selected
+    if [[ "$use_noizdns" == true ]]; then
+        create_noizdns_service_override "$tag" || print_warn "Could not set NoizDNS binary for ${tag}"
+        # Stop tunnel so it restarts with noizdns-server binary
+        systemctl stop "dnstm-${tag}.service" 2>/dev/null || true
+        systemctl daemon-reload 2>/dev/null || true
+    fi
+
     # Show DNSTT pubkey if applicable
     if [[ "$transport" == "dnstt" && -f "/etc/dnstm/tunnels/${tag}/server.pub" ]]; then
         local pubkey
@@ -1803,7 +1822,7 @@ do_add_tunnel() {
             dnstt) slipnet_type="dnstt" ;;
         esac
         # NoizDNS tunnels use dnstt transport but need sayedns type for SlipNet
-        [[ "$tag" == noiz* ]] && slipnet_type="sayedns"
+        [[ "$use_noizdns" == true || "$tag" == noiz* ]] && slipnet_type="sayedns"
 
         DOMAIN="$base_domain"
         local slipnet_url
@@ -2925,6 +2944,53 @@ save_xray_config() {
     print_ok "Saved config: ${config_file}"
 }
 
+# ─── NoizDNS Binary Download ──────────────────────────────────────────────────
+
+# Download and verify the NoizDNS server binary if not already installed.
+# Returns 0 if binary is available (already existed or freshly downloaded), 1 otherwise.
+ensure_noizdns_binary() {
+    # Already installed and working
+    if [[ -x /usr/local/bin/noizdns-server ]]; then
+        return 0
+    fi
+
+    print_info "Downloading NoizDNS server (DPI-resistant tunnel)..."
+    local arch
+    arch=$(detect_architecture)
+    local noizdns_arch="$arch"
+    [[ "$noizdns_arch" == "armv7" ]] && noizdns_arch="arm"
+
+    local noizdns_downloaded=false
+    local noizdns_release_url="https://github.com/anonvector/noizdns-deploy/releases/latest/download/dnstt-server-linux-${noizdns_arch}"
+    local noizdns_raw_url="https://raw.githubusercontent.com/anonvector/noizdns-deploy/main/bin/dnstt-server-linux-${noizdns_arch}"
+
+    if curl -fsSL -o /usr/local/bin/noizdns-server "$noizdns_release_url" 2>/dev/null; then
+        noizdns_downloaded=true
+    elif curl -fsSL -o /usr/local/bin/noizdns-server "$noizdns_raw_url" 2>/dev/null; then
+        noizdns_downloaded=true
+    fi
+
+    if [[ "$noizdns_downloaded" == true ]]; then
+        chmod +x /usr/local/bin/noizdns-server
+        if [[ ! -s /usr/local/bin/noizdns-server ]]; then
+            print_warn "NoizDNS binary is empty (download may have failed)"
+            rm -f /usr/local/bin/noizdns-server
+            return 1
+        elif timeout 3 /usr/local/bin/noizdns-server -help 2>&1 | grep -qi "usage\|flag\|dnstt\|privkey"; then
+            print_ok "NoizDNS server installed and verified"
+            return 0
+        else
+            print_warn "NoizDNS binary downloaded but may be corrupt or wrong architecture"
+            rm -f /usr/local/bin/noizdns-server
+            return 1
+        fi
+    else
+        print_warn "Could not download NoizDNS server (GitHub may be blocked)"
+        print_info "Manual install: curl -fsSL -o /usr/local/bin/noizdns-server ${noizdns_release_url} && chmod +x /usr/local/bin/noizdns-server"
+        return 1
+    fi
+}
+
 # ─── NoizDNS Service Override ─────────────────────────────────────────────────
 
 # Override a DNSTT tunnel's systemd service to use the NoizDNS binary instead.
@@ -3785,35 +3851,7 @@ step_install_dnstm() {
 
     # Download NoizDNS server binary (DPI-resistant DNSTT fork)
     echo ""
-    print_info "Downloading NoizDNS server (DPI-resistant tunnel)..."
-    # NoizDNS uses "arm" not "armv7" for ARM builds
-    local noizdns_arch="$arch"
-    [[ "$noizdns_arch" == "armv7" ]] && noizdns_arch="arm"
-    # Try GitHub Releases first (less likely blocked), then raw content as fallback
-    local noizdns_downloaded=false
-    local noizdns_release_url="https://github.com/anonvector/noizdns-deploy/releases/latest/download/dnstt-server-linux-${noizdns_arch}"
-    local noizdns_raw_url="https://raw.githubusercontent.com/anonvector/noizdns-deploy/main/bin/dnstt-server-linux-${noizdns_arch}"
-    if curl -fsSL -o /usr/local/bin/noizdns-server "$noizdns_release_url" 2>/dev/null; then
-        noizdns_downloaded=true
-    elif curl -fsSL -o /usr/local/bin/noizdns-server "$noizdns_raw_url" 2>/dev/null; then
-        noizdns_downloaded=true
-    fi
-    if [[ "$noizdns_downloaded" == true ]]; then
-        chmod +x /usr/local/bin/noizdns-server
-        # Verify binary is real (not HTML error page, 0-byte, or wrong architecture)
-        if [[ ! -s /usr/local/bin/noizdns-server ]]; then
-            print_warn "NoizDNS binary is empty (download may have failed)"
-            rm -f /usr/local/bin/noizdns-server
-        elif timeout 3 /usr/local/bin/noizdns-server -help 2>&1 | grep -qi "usage\|flag\|dnstt\|privkey"; then
-            print_ok "NoizDNS server installed and verified"
-        else
-            print_warn "NoizDNS binary downloaded but may be corrupt or wrong architecture"
-            rm -f /usr/local/bin/noizdns-server
-        fi
-    else
-        print_warn "Could not download NoizDNS server from any source (NoizDNS tunnels will be skipped)"
-        print_info "Manual install: curl -fsSL -o /usr/local/bin/noizdns-server ${noizdns_release_url}"
-    fi
+    ensure_noizdns_binary || true
 }
 
 # ─── STEP 6: Verify Port 53 ────────────────────────────────────────────────────
@@ -4997,7 +5035,8 @@ do_add_domain() {
         DNSTT_PUBKEY=$(cat "/etc/dnstm/tunnels/${dnstt_tag}/server.pub" 2>/dev/null || true)
     fi
 
-    # NoizDNS tunnels (if binary available)
+    # NoizDNS tunnels — download binary if not available, then create tunnels
+    ensure_noizdns_binary || true
     if [[ -x /usr/local/bin/noizdns-server ]]; then
         local noiz_tag="noiz${num}"
         local noiz_ssh_tag="noiz-ssh${num}"
